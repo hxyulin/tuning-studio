@@ -4,8 +4,8 @@ The public package names are `tuning-studio` (desktop), `tuning-studio-api`
 (allocation-free firmware API), and `tuning-studio-trace` (optional task event
 recorder). Supporting host crates use the `tuning-studio-` prefix as well.
 Names were checked on crates.io on 2026-09-22; availability is not a reservation.
-The current release candidate is 0.1.1. Review its
-[release notes](release-notes/0.1.1.md); the historical
+The current release candidate is 0.1.2. Review its
+[release notes](release-notes/0.1.2.md); the historical
 [0.1.0 checklist](release-checklist.md) records initial packaging work.
 
 ## Firmware integration
@@ -85,7 +85,7 @@ Local checks:
 
 ```sh
 npm ci && npm run build
-python3 scripts/release.py validate --version 0.1.1
+python3 scripts/release.py validate --version 0.1.2
 cargo test --workspace --locked
 cargo package -p tuning-studio-api
 cargo package -p tuning-studio-trace
@@ -131,3 +131,11 @@ for this manual upload process.
 Before a new version, update `vscode/package.json` and its lockfile. Supply that
 version to the workflow; it validates the package version before building and
 uses `vVERSION` for optional attachment. Existing release assets are never overwritten.
+
+## Standalone browser server assets
+
+The manual release also builds `tuning-studio-server` in release mode for each host. The archive
+step emits `studio-server-VERSION-TARGET.tar.gz` and its `.sha256` alongside desktop archives.
+The server embeds `crates/studio-server/frontend`, populated by `npm run build`. Consumers can
+cache this executable and invoke `--web --elf PATH --chip NAME` without Tauri or Node. A draft
+release cannot be fetched anonymously; publish the matching release before updating consumers.

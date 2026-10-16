@@ -96,7 +96,7 @@ export interface HostStorage {
  */
 export interface Host {
   canRequest?(request: import("../can/types").CanRequest): Promise<import("../can/types").CanSnapshot>;
-  readonly name: "tauri" | "mock" | "vscode";
+  readonly name: "tauri" | "mock" | "vscode" | "web";
   readonly storage: HostStorage;
   startup(): Promise<HostStartup>;
   /** Native actions changed the target; refresh app state without navigating the webview. */

@@ -10,7 +10,10 @@
 //! The server exits when stdin closes, stopping any session first so the probe
 //! is released.
 
+#![forbid(unsafe_code)]
+
 mod protocol;
+mod web;
 
 use std::io::{self, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -88,6 +91,7 @@ struct Envelope {
 #[derive(Deserialize)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 enum Call {
+    Startup {},
     CanRequest {
         request: studio_app::can::Request,
     },
@@ -182,6 +186,7 @@ fn to_value<T: serde::Serialize>(result: Result<T, String>) -> Result<Value, Str
 }
 
 struct Server {
+    startup: Value,
     app: Arc<StudioApp>,
     out: Out,
     mock: bool,
@@ -192,6 +197,7 @@ impl Server {
     fn run(&self, call: Call) -> Result<Value, String> {
         let app = &self.app;
         match call {
+            Call::Startup {} => Ok(self.startup.clone()),
             Call::CanRequest { request } => {
                 use studio_app::can::Request;
                 if self.mock && !matches!(request, Request::Poll { .. } | Request::Disconnect) {
@@ -345,10 +351,21 @@ fn main() {
     if std::env::args().any(|a| a == studio_carriers::can_process::WORKER_FLAG) {
         studio_carriers::can_process::run_worker_stdio();
     }
+    if std::env::args().any(|arg| arg == "--help" || arg == "-h") {
+        println!("studio-server [--mock] [--read-only]\n\nBrowser mode:\n  studio-server --web [--elf PATH] [--chip NAME] [--probe VID:PID[:SERIAL]]\n    [--speed-khz KHZ] [--port PORT] [--no-open] [--reset | --flash]\n\nAttach is the default. --flash verifies programming and implies reset.\nWithout --web, requests use framed stdin/stdout (VS Code). ");
+        return;
+    }
     let mock = std::env::args().any(|a| a == "--mock");
     let read_only = std::env::args().any(|a| a == "--read-only");
     if std::env::args().any(|a| a == "--version") {
         println!("studio-server {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+    if std::env::args().any(|a| a == "--web") {
+        if let Err(error) = web::run() {
+            eprintln!("studio-server: {error}");
+            std::process::exit(1);
+        }
         return;
     }
     // hidapi on macOS binds to the run loop of the first thread that initialises
@@ -382,6 +399,7 @@ fn main() {
         events.json(&json!({ "type": "app_event", "event": event }));
     }));
     let server = Arc::new(Server {
+        startup: Value::Null,
         app: app.clone(),
         out: out.clone(),
         mock,

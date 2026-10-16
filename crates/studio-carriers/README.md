@@ -10,7 +10,7 @@ For a published release:
 
 ```toml
 [dependencies]
-tuning-studio-carriers = "0.1.1"
+tuning-studio-carriers = "0.1.2"
 ```
 
 The Rust library name is **`studio_carriers`**. A mock target needs no hardware:
@@ -70,3 +70,6 @@ and sessions, use `tuning-studio-core`; for a complete application backend, use
 
 Part of [Tuning Studio](https://github.com/hxyulin/tuning-tools). Host-only (`std`),
 MIT licensed. The 0.1 Rust API is evolving.
+
+`ProbeLink::prepare` explicitly flashes with verification when requested, then resets and runs
+core 0. Ordinary `open` remains a running-target attach. Flash/reset still needs bench verification.

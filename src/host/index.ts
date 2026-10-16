@@ -1,3 +1,4 @@
+import { createWebHost } from "./web";
 import { mockHost } from "./mock";
 import { tauriHost } from "./tauri";
 import type { Host } from "./types";
@@ -26,6 +27,7 @@ function pick(): Host {
     return createVsCodeHost();
   }
   const asked = new URLSearchParams(location.search).get("host");
+  if (asked === "web") return createWebHost();
   if (asked === "mock" || !("__TAURI_INTERNALS__" in window)) return mockHost;
   return tauriHost;
 }
