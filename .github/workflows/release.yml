@@ -6,7 +6,7 @@ on:
       version:
         description: Version already committed in all Cargo manifests and tauri.conf.json
         required: true
-        default: '0.1.1'
+        default: '0.1.2'
       create_release:
         description: Create a draft GitHub release after all builds pass
         type: boolean
@@ -79,6 +79,9 @@ jobs:
       - name: Build native bundles
         shell: bash
         run: npm run tauri -- build --target "$RELEASE_TARGET" --bundles "$RELEASE_BUNDLES"
+      - name: Build browser server
+        shell: bash
+        run: cargo build --locked --release -p tuning-studio-server --target "$RELEASE_TARGET"
       - name: Assemble binstall archive
         shell: bash
         run: python scripts/release.py archive --version "$RELEASE_VERSION" --target "$RELEASE_TARGET"

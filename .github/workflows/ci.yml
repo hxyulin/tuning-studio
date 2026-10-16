@@ -38,7 +38,9 @@ jobs:
       # tauri::generate_context! embeds frontendDist at compile time
       - name: Placeholder frontend dist
         shell: bash
-        run: mkdir -p src-tauri/frontend && echo '<!doctype html>' > src-tauri/frontend/index.html
+        run: |
+          mkdir -p src-tauri/frontend crates/studio-server/frontend
+          echo '<!doctype html>' | tee src-tauri/frontend/index.html > crates/studio-server/frontend/index.html
       - run: cargo fmt --all --check
         if: runner.os == 'Linux'
       - run: cargo clippy --workspace --all-targets -- -D warnings

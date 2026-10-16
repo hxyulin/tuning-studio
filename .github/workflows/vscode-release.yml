@@ -5,7 +5,7 @@ on:
       version:
         description: Version already committed in vscode/package.json
         required: true
-        default: '0.1.1'
+        default: '0.1.2'
       attach_release:
         description: Attach verified VSIX packages to an existing GitHub release
         type: boolean

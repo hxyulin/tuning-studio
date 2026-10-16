@@ -13,9 +13,9 @@ For a published release:
 
 ```toml
 [dependencies]
-tuning-studio-core = "0.1.1"
-tuning-studio-carriers = "0.1.1"
-tuning-studio-dwarf = "0.1.1"
+tuning-studio-core = "0.1.2"
+tuning-studio-carriers = "0.1.2"
+tuning-studio-dwarf = "0.1.2"
 ```
 
 The Rust library name is **`studio_core`**. This example samples a mock value:

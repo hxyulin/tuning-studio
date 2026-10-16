@@ -43,6 +43,10 @@ def validate(version):
     files = [name.replace("\\", "/") for name in files]
     if "frontend/index.html" not in files or not any(x.startswith("frontend/assets/") for x in files):
         raise SystemExit("Desktop crate is missing embedded frontend assets")
+    files = subprocess.check_output(["cargo", "package", "-p", "tuning-studio-server", "--list", "--allow-dirty"], text=True).splitlines()
+    files = [name.replace("\\", "/") for name in files]
+    if "frontend/index.html" not in files or not any(x.startswith("frontend/assets/") for x in files):
+        raise SystemExit("Server crate is missing embedded frontend assets")
     print(f"Validated {len(PACKAGES)} packages at {version}")
 
 def archive(version, target):
@@ -62,16 +66,36 @@ def archive(version, target):
     digest = hashlib.sha256(dest.read_bytes()).hexdigest()
     dest.with_name(dest.name + ".sha256").write_text(f"{digest}  {dest.name}\n")
     print(dest)
+    archive_server(version, target)
+
+def archive_server(version, target, server=None):
+    suffix = ".exe" if "windows" in target else ""
+    server = server or Path("target") / target / "release" / f"studio-server{suffix}"
+    out = Path("release-assets")
+    out.mkdir(exist_ok=True)
+    if not server.is_file():
+        raise SystemExit(f"Missing {server}; build tuning-studio-server before archiving")
+    dest = out / f"studio-server-{version}-{target}.tar.gz"
+    with tarfile.open(dest, "w:gz") as tar:
+        tar.add(server, arcname=server.name)
+        tar.add("LICENSE", arcname="LICENSE")
+        tar.add("crates/studio-server/README.md", arcname="README.md")
+    digest = hashlib.sha256(dest.read_bytes()).hexdigest()
+    dest.with_name(dest.name + ".sha256").write_text(f"{digest}  {dest.name}\n")
+    print(dest)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["validate", "archive"])
+    parser.add_argument("command", choices=["validate", "archive", "server-archive"])
     parser.add_argument("--version", required=True)
     parser.add_argument("--target")
     args = parser.parse_args()
     if args.command == "validate":
         validate(args.version)
     elif args.target:
-        archive(args.version, args.target)
+        if args.command == "server-archive":
+            archive_server(args.version, args.target)
+        else:
+            archive(args.version, args.target)
     else:
         parser.error("archive requires --target")

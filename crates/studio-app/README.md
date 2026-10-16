@@ -1,7 +1,7 @@
 # tuning-studio-app
 
 The shared Tuning Studio backend, exposed as plain Rust methods. The desktop
-Tauri host and the VS Code stdio server both use `StudioApp`, so ELF inspection,
+Tauri host and the browser/VS Code server both use `StudioApp`, so ELF inspection,
 connections, live reads, tuning, recording and streaming share one implementation.
 This crate does not depend on Tauri or a webview.
 
@@ -11,7 +11,7 @@ For a published release:
 
 ```toml
 [dependencies]
-tuning-studio-app = "0.1.1"
+tuning-studio-app = "0.1.2"
 ```
 
 The Rust library name is **`studio_app`**. Browsing an ELF needs no hardware:

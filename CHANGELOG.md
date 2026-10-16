@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.2 (unreleased)
+
+- Standalone local browser host with embedded frontend and authenticated WebSocket acquisition.
+- Explicit attach/reset/flash startup modes and per-platform server archives with checksums.
+
 ## 0.1.1
 
 - Bounded tuning sliders with coalesced writes and precise numeric input.

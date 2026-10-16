@@ -67,3 +67,17 @@ python3 scripts/release.py validate --version 0.1.1
 
 Install the ARM target with `rustup target add thumbv7em-none-eabihf` first.
 Packaging and the manual release workflow are described in [releases](releases.md).
+
+## Browser host checks
+
+After `npm run build`, `cargo test -p tuning-studio-server --test web` checks the real loopback
+HTTP/WebSocket service using mock memory. For an interactive check without hardware:
+
+```sh
+cargo run -p tuning-studio-server -- --web --mock \
+  --elf crates/studio-dwarf/tests/fixtures/test_arm.elf --chip mock
+```
+
+Pick a numeric symbol and press W to plot it. Closing/reopening the printed URL creates a fresh
+session without resetting hardware. The `--reset` and `--flash` startup paths need a separate
+bench check on the intended target; never use the fixture with unrelated hardware.

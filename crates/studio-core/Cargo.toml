@@ -1,6 +1,6 @@
 [package]
 name = "tuning-studio-core"
-version = "0.1.1"
+version = "0.1.2"
 description = "Read planning, sampling scheduler, probe statistics and defmt decoding"
 edition.workspace = true
 license.workspace = true
@@ -9,12 +9,12 @@ readme = "README.md"
 authors.workspace = true
 
 [dependencies]
-tuning-studio-api = { path = "../tuning-studio-api", version = "0.1.1" }
+tuning-studio-api = { path = "../tuning-studio-api", version = "0.1.2" }
 defmt-decoder = "1.1"
 object = { workspace = true }
 serde = { workspace = true }
-studio-carriers = { package = "tuning-studio-carriers", path = "../studio-carriers", version = "0.1.1" }
-studio-dwarf = { package = "tuning-studio-dwarf", path = "../studio-dwarf", version = "0.1.1" }
+studio-carriers = { package = "tuning-studio-carriers", path = "../studio-carriers", version = "0.1.2" }
+studio-dwarf = { package = "tuning-studio-dwarf", path = "../studio-dwarf", version = "0.1.2" }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 

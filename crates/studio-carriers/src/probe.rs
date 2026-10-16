@@ -128,6 +128,27 @@ impl ProbeLink {
         tracing::info!(?ap, "attached");
         Ok(Self { session, ap })
     }
+
+    /// Flash only when explicitly requested, then reset and run core 0.
+    /// Call before starting acquisition, while this process owns the probe exclusively.
+    pub fn prepare(config: &ProbeConfig, elf: &std::path::Path, flash: bool) -> Result<()> {
+        let mut link = Self::open(config)?;
+        if flash {
+            let mut options = probe_rs::flashing::DownloadOptions::default();
+            options.verify = true;
+            probe_rs::flashing::download_file_with_options(
+                &mut link.session,
+                elf,
+                probe_rs::flashing::ElfLoader(Default::default()),
+                options,
+            )
+            .map_err(|e| CarrierError::Other(format!("flash failed: {e}")))?;
+        }
+        link.session
+            .core(0)
+            .and_then(|mut core| core.reset())
+            .map_err(|e| CarrierError::Other(format!("reset failed: {e}")))
+    }
 }
 
 fn core_memory_ap(session: &Session) -> Result<FullyQualifiedApAddress> {

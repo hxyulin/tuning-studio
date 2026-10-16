@@ -10,7 +10,7 @@ For a published release:
 
 ```toml
 [dependencies]
-tuning-studio-dwarf = "0.1.1"
+tuning-studio-dwarf = "0.1.2"
 ```
 
 The Rust library name is **`studio_dwarf`**.
