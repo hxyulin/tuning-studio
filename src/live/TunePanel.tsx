@@ -5,7 +5,7 @@ import { field, ghostButton, primaryButton } from "../ui";
 import { formatValue } from "./format";
 import { Tune } from "./useSession";
 import { TuneSlider } from "./TuneSlider";
-import { SAVE_UNSUPPORTED, saveUnsupported } from "./tuningPresentation";
+import { followSent, SAVE_UNSUPPORTED, saveUnsupported, type Sent } from "./tuningPresentation";
 
 interface Props {
   catalog: Catalog | null;
@@ -58,6 +58,8 @@ export function TunePanel({ catalog, catalogError, tune, connected, fromTarget, 
   const grouped = useMemo(() => catalog ? groups({ ...catalog, entries: catalog.entries.filter((e) => e.name.toLowerCase().includes(query.trim().toLowerCase())) }) : [], [catalog, query]);
   const [busy, setBusy] = useState<"reset" | "save" | null>(null);
   const [notice, setNotice] = useState<{ text: string; error: boolean } | null>(null);
+  /** Bumped by Reset to defaults, so each row drops its draft, error and last sent value */
+  const [resets, setResets] = useState(0);
 
   const unsupported = tune?.saveSupported === false;
   useEffect(() => { setNotice(null); }, [catalog, connected]);
@@ -84,6 +86,7 @@ export function TunePanel({ catalog, catalogError, tune, connected, fromTarget, 
     try {
       if (action === "reset") {
         await host.discardValues();
+        setResets((n) => n + 1);
         setNotice({ text: unsupported ? "Defaults requested for this run." : "Defaults requested. Save to keep them if this firmware supports persistence.", error: false });
       } else {
         await onSave();
@@ -133,7 +136,7 @@ export function TunePanel({ catalog, catalogError, tune, connected, fromTarget, 
             <ul>
               {group.entries.map((entry) => (
                 <TuneRow
-                  key={entry.id}
+                  key={`${entry.id}:${resets}`}
                   entry={entry}
                   value={tune?.values.get(entry.id) ?? null}
                   saved={tune?.saved.get(entry.id) ?? null}
@@ -194,10 +197,16 @@ export function TuneRow({ entry, value, saved, canWrite, saveSupported, watched,
   const [draft, setDraft] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  /** The last number sent, to explain a value the firmware changed; `seen` once a read followed it */
-  const [sent, setSent] = useState<{ value: number; seen: boolean } | null>(null);
-  useEffect(() => setSent((s) => (s && !s.seen ? { ...s, seen: true } : s)), [value]);
+  /** The last number sent, to explain a value the firmware changed */
+  const [sent, setSent] = useState<Sent | null>(null);
   const requested = value?.requested ?? null;
+  useEffect(() => setSent((s) => followSent(s, requested)), [value]);
+  // A rejected entry no longer describes the row once the request changes elsewhere. A disabled
+  // input loses focus without a blur event, so its draft is dropped here too.
+  useEffect(() => {
+    setDraft(null);
+    setError(null);
+  }, [requested]);
   const applied = value?.applied ?? null;
   const settling = live && requested !== null && applied !== null && requested !== applied;
   const id = `req-${entry.id}`;
@@ -215,7 +224,7 @@ export function TuneRow({ entry, value, saved, canWrite, saveSupported, watched,
       await host.requestValue(entry.id, number);
       setDraft(null);
       setError(null);
-      setSent({ value: number, seen: false });
+      setSent({ value: number });
       return true;
     } catch (e) {
       setError(String(e));
@@ -228,7 +237,7 @@ export function TuneRow({ entry, value, saved, canWrite, saveSupported, watched,
   let note: string | null = null;
   // An f32 cell holds the nearest float to what was sent
   const same = (a: number, b: number) => (entry.kind === "f32" ? Math.fround(a) === Math.fround(b) : a === b);
-  if (sent?.seen && requested !== null && !same(requested, sent.value)) {
+  if (sent?.answer !== undefined && requested !== null && !same(requested, sent.value)) {
     const outside = (entry.min !== null && sent.value < entry.min) || (entry.max !== null && sent.value > entry.max);
     note = outside
       ? `The firmware runs ${formatValue(requested, entry.kind)}: ${sent.value} is outside ${range(entry)}.`

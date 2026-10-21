@@ -30,6 +30,22 @@ export function sliderRange(entry: CatalogEntry): { min: number; max: number; st
   return low < high ? { min: low, max: high, step: integer ? 1 : "any" } : null;
 }
 
+/** A number a row sent, and the request the firmware reported first after it. */
+export interface Sent {
+  value: number;
+  answer?: number;
+}
+
+/**
+ * Follow a sent number across reads: record the firmware's first answer, then forget the send once
+ * the request moves on, as after Reset to defaults or another host's write.
+ */
+export function followSent(sent: Sent | null, requested: number | null): Sent | null {
+  if (!sent || requested === null) return sent;
+  if (sent.answer === undefined) return { ...sent, answer: requested };
+  return sent.answer === requested ? sent : null;
+}
+
 export const SAVE_UNSUPPORTED = "This firmware does not support saving. Changes are temporary and reset on restart.";
 export function saveUnsupported(error: unknown): boolean {
   return String(error).includes(SAVE_UNSUPPORTED);

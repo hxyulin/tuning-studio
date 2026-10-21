@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { sliderRange, tuningEntry, tuningNode, saveUnsupported, SAVE_UNSUPPORTED } from "../src/live/tuningPresentation.ts";
+import { followSent, sliderRange, tuningEntry, tuningNode, saveUnsupported, SAVE_UNSUPPORTED } from "../src/live/tuningPresentation.ts";
 import type { CatalogEntry, SymbolNode } from "../src/elf/api.ts";
 
 const entry: CatalogEntry = {
@@ -48,4 +48,13 @@ test("only explicit unsupported replies disable saving", () => {
   assert.equal(saveUnsupported(new Error(SAVE_UNSUPPORTED)), true);
   assert.equal(saveUnsupported("Saving failed: firmware storage is unavailable or the write failed."), false);
   assert.equal(saveUnsupported("the firmware did not answer in time"), false);
+});
+
+test("a sent value keeps the firmware's answer until the request changes elsewhere", () => {
+  const sent = followSent({ value: 2 }, 1.5);
+  assert.deepEqual(sent, { value: 2, answer: 1.5 });
+  assert.equal(followSent(sent, 1.5), sent);
+  assert.equal(followSent(sent, 0.5), null);
+  assert.equal(followSent(null, 0.5), null);
+  assert.deepEqual(followSent({ value: 2 }, null), { value: 2 });
 });
