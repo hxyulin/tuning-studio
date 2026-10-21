@@ -74,7 +74,10 @@ publishing rights for these packages. It publishes in dependency order after
 all builds pass. Publication is permanent; leave this input off for rehearsals.
 The secret is exposed only to the publish job. Do not put it in source files.
 A partially completed publish must be assessed before rerunning: already-published
-versions cannot be overwritten. Bump versions for changed contents.
+versions cannot be overwritten. Bump versions for changed contents. With unchanged contents,
+rerun with **Create release** off: the job skips versions already on crates.io.
+`tuning-studio-server` and `tuning-studio` publish with `--allow-dirty`, since they embed the
+ignored frontend build.
 
 The initial full workspace cannot be packaged against crates.io until its new
 internal dependencies have been published. The build job verifies the two

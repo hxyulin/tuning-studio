@@ -103,6 +103,7 @@ jobs:
     runs-on: ubuntu-22.04
     env:
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      RELEASE_VERSION: ${{ inputs.version }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -119,7 +120,17 @@ jobs:
         run: |
           test -n "$CARGO_REGISTRY_TOKEN" || { echo 'Set the CARGO_REGISTRY_TOKEN repository secret first'; exit 1; }
           for package in tuning-studio-api tuning-studio-trace tuning-studio-dwarf tuning-studio-carriers tuning-studio-core tuning-studio-app tuning-studio-server tuning-studio; do
-            cargo publish --locked -p "$package"
+            # A rerun after a partial failure resumes at the first unpublished crate.
+            if curl -sf -A tuning-tools-release "https://crates.io/api/v1/crates/$package/$RELEASE_VERSION" > /dev/null; then
+              echo "$package $RELEASE_VERSION is already published"
+              continue
+            fi
+            # The server and desktop crates embed the ignored frontend build from npm run build.
+            case "$package" in
+              tuning-studio-server|tuning-studio) dirty=--allow-dirty ;;
+              *) dirty= ;;
+            esac
+            cargo publish --locked $dirty -p "$package"
           done
 
   release:
