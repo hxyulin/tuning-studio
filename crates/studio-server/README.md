@@ -81,7 +81,7 @@ Control requests use JSON over WebSocket; output reuses the framed stdio binary 
 including batched TTS1 sample frames. Queues stay bounded and a stalled writer times out. The
 normal stdio protocol is unchanged. The browser service is loopback-only; it has no LAN mode.
 
-Release assets include `studio-server-VERSION-TARGET.tar.gz` with embedded frontend assets,
+Release assets include `studio-server-VERSION-TARGET.tar.zst` with embedded frontend assets,
 README and license, plus its `.sha256`. The 0.1.2 candidate must be published before consumers
 can fetch it. There has been no hardware verification of flash/reset in this change; mock tests
 cover HTTP, authentication, ELF loading and repeated session connections.

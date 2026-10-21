@@ -61,7 +61,7 @@ The workflow builds:
 | macOS Intel | `x86_64-apple-darwin` | app in DMG |
 
 Every target also produces
-`tuning-studio-VERSION-TARGET.tar.gz` and a SHA-256 checksum. The archive contains the executable, README and license. Its layout
+`tuning-studio-VERSION-TARGET.tar.zst` and a SHA-256 checksum. The archive contains the executable, README and license. Its layout
 matches `[package.metadata.binstall]`; downloads come from the `vVERSION` GitHub
 release. Draft release assets are not publicly accessible to binstall. Publish
 the draft after reviewing its artifacts, release notes and signing limitations.
@@ -135,7 +135,7 @@ uses `vVERSION` for optional attachment. Existing release assets are never overw
 ## Standalone browser server assets
 
 The manual release also builds `tuning-studio-server` in release mode for each host. The archive
-step emits `studio-server-VERSION-TARGET.tar.gz` and its `.sha256` alongside desktop archives.
+step emits `studio-server-VERSION-TARGET.tar.zst` and its `.sha256` alongside desktop archives.
 The server embeds `crates/studio-server/frontend`, populated by `npm run build`. Consumers can
 cache this executable and invoke `--web --elf PATH --chip NAME` without Tauri or Node. A draft
 release cannot be fetched anonymously; publish the matching release before updating consumers.

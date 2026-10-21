@@ -4,6 +4,7 @@
 
 - Standalone local browser host with embedded frontend and authenticated WebSocket acquisition.
 - Explicit attach/reset/flash startup modes and per-platform server archives with checksums.
+- zstd release archives, and binstall metadata for `tuning-studio-server`.
 
 ## 0.1.1
 

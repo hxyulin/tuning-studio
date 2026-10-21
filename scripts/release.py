@@ -1,4 +1,6 @@
-"""Validate release metadata and assemble binstall archives; no publication side effects."""
+"""Validate release metadata and assemble binstall archives; no publication side effects.
+
+Archives are zstd-compressed tarballs, which need Python 3.14 or later."""
 import argparse
 import hashlib
 import json
@@ -56,8 +58,8 @@ def archive(version, target):
         raise SystemExit(f"Missing {binary}")
     out = Path("release-assets")
     out.mkdir(exist_ok=True)
-    dest = out / f"tuning-studio-{version}-{target}.tar.gz"
-    with tarfile.open(dest, "w:gz") as tar:
+    dest = out / f"tuning-studio-{version}-{target}.tar.zst"
+    with tarfile.open(dest, "w:zst") as tar:
         tar.add(binary, arcname=binary.name)
         tar.add("LICENSE", arcname="LICENSE")
         tar.add("src-tauri/README.md", arcname="README.md")
@@ -75,8 +77,8 @@ def archive_server(version, target, server=None):
     out.mkdir(exist_ok=True)
     if not server.is_file():
         raise SystemExit(f"Missing {server}; build tuning-studio-server before archiving")
-    dest = out / f"studio-server-{version}-{target}.tar.gz"
-    with tarfile.open(dest, "w:gz") as tar:
+    dest = out / f"studio-server-{version}-{target}.tar.zst"
+    with tarfile.open(dest, "w:zst") as tar:
         tar.add(server, arcname=server.name)
         tar.add("LICENSE", arcname="LICENSE")
         tar.add("crates/studio-server/README.md", arcname="README.md")

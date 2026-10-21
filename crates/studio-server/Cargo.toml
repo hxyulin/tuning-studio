@@ -13,6 +13,11 @@ include = ["src/**", "frontend/**", "tests/**", "README.md", "LICENSE", "Cargo.t
 name = "studio-server"
 path = "src/main.rs"
 
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/studio-server-{ version }-{ target }.tar.zst"
+pkg-fmt = "tzstd"
+bin-dir = "{ bin }{ binary-ext }"
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
