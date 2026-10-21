@@ -357,7 +357,7 @@ pub fn demangle_symbol(mangled: &str) -> String {
     }
 
     if let Ok(symbol) = CppSymbol::new(mangled) {
-        if let Ok(demangled) = symbol.demangle(&cpp_demangle::DemangleOptions::default()) {
+        if let Ok(demangled) = symbol.demangle() {
             return demangled;
         }
     }
@@ -480,11 +480,11 @@ impl ElfParser {
         let sections: Vec<(u64, u64, String, bool)> = file
             .sections()
             .filter_map(|s| {
-                let object::SectionFlags::Elf { sh_flags } = s.flags() else {
+                let object::SectionFlags::Elf { sh_flags, .. } = s.flags() else {
                     return None;
                 };
-                let alloc = sh_flags & u64::from(object::elf::SHF_ALLOC) != 0;
-                let write = sh_flags & u64::from(object::elf::SHF_WRITE) != 0;
+                let alloc = sh_flags.0 & object::elf::SHF_ALLOC.0 != 0;
+                let write = sh_flags.0 & object::elf::SHF_WRITE.0 != 0;
                 alloc.then(|| {
                     (
                         s.address(),

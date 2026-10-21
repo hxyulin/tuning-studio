@@ -340,13 +340,13 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
             .ok()
             .and_then(|mut tree| {
                 let root = tree.root().ok()?;
-                root.entry().attr_value(gimli::DW_AT_language).ok()?
+                root.entry().attr_value(gimli::DW_AT_language)
             })
             .is_some_and(|v| matches!(v, AttributeValue::Language(gimli::DW_LANG_Rust)));
 
         let mut entries = unit.entries();
 
-        while let Some((_, entry)) = entries
+        while let Some(entry) = entries
             .next_dfs()
             .map_err(|e| format!("Failed to read DWARF entry: {}", e))?
         {
@@ -760,7 +760,7 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
         node: gimli::EntriesTreeNode<Reader<'a>>,
     ) -> VariantPart {
         let discr_ref = match node.entry().attr_value(gimli::DW_AT_discr) {
-            Ok(Some(AttributeValue::UnitRef(offset))) => Some(offset),
+            Some(AttributeValue::UnitRef(offset)) => Some(offset),
             _ => None,
         };
 
@@ -777,14 +777,10 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
                     }
                 }
                 gimli::DW_TAG_variant => {
-                    let discr_value = entry
-                        .attr_value(gimli::DW_AT_discr_value)
-                        .ok()
-                        .flatten()
-                        .and_then(|v| {
-                            v.udata_value()
-                                .or_else(|| v.sdata_value().map(|s| s as u64))
-                        });
+                    let discr_value = entry.attr_value(gimli::DW_AT_discr_value).and_then(|v| {
+                        v.udata_value()
+                            .or_else(|| v.sdata_value().map(|s| s as u64))
+                    });
                     let mut grandchildren = child.children();
                     while let Ok(Some(gc)) = grandchildren.next() {
                         if gc.entry().tag() == gimli::DW_TAG_member {
@@ -1057,7 +1053,7 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
     ) -> Option<usize> {
         // Try DW_AT_specification first, then DW_AT_abstract_origin
         for attr_name in [gimli::DW_AT_specification, gimli::DW_AT_abstract_origin] {
-            if let Ok(Some(attr)) = entry.attr_value(attr_name) {
+            if let Some(attr) = entry.attr_value(attr_name) {
                 let offset = match attr {
                     AttributeValue::UnitRef(offset) => offset
                         .to_debug_info_offset(&unit.header)
@@ -1328,7 +1324,7 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
         unit: &Unit<Reader<'a>>,
         entry: &DebuggingInformationEntry<Reader<'a>>,
     ) -> Option<String> {
-        let attr = entry.attr_value(gimli::DW_AT_name).ok()??;
+        let attr = entry.attr_value(gimli::DW_AT_name)?;
         self.attr_to_string(unit, &attr)
     }
 
@@ -1339,11 +1335,8 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
         unit: &Unit<Reader<'a>>,
         entry: &DebuggingInformationEntry<Reader<'a>>,
     ) -> Option<SourceLocation> {
-        let line = entry
-            .attr_value(gimli::DW_AT_decl_line)
-            .ok()??
-            .udata_value()?;
-        let index = match entry.attr_value(gimli::DW_AT_decl_file).ok()?? {
+        let line = entry.attr_value(gimli::DW_AT_decl_line)?.udata_value()?;
+        let index = match entry.attr_value(gimli::DW_AT_decl_file)? {
             AttributeValue::FileIndex(i) => i,
             other => other.udata_value()?,
         };
@@ -1375,8 +1368,7 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
         // Try DW_AT_linkage_name first, then DW_AT_MIPS_linkage_name
         let attr = entry
             .attr_value(gimli::DW_AT_linkage_name)
-            .ok()?
-            .or_else(|| entry.attr_value(gimli::DW_AT_MIPS_linkage_name).ok()?);
+            .or_else(|| entry.attr_value(gimli::DW_AT_MIPS_linkage_name));
         attr.and_then(|a| self.attr_to_string(unit, &a))
     }
 
@@ -1403,7 +1395,7 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
     }
 
     fn get_byte_size(&self, entry: &DebuggingInformationEntry<Reader<'a>>) -> Option<u64> {
-        match entry.attr_value(gimli::DW_AT_byte_size).ok()?? {
+        match entry.attr_value(gimli::DW_AT_byte_size)? {
             AttributeValue::Udata(size) => Some(size),
             AttributeValue::Data1(size) => Some(size as u64),
             AttributeValue::Data2(size) => Some(size as u64),
@@ -1414,7 +1406,7 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
     }
 
     fn get_encoding(&self, entry: &DebuggingInformationEntry<Reader<'a>>) -> Option<gimli::DwAte> {
-        match entry.attr_value(gimli::DW_AT_encoding).ok()?? {
+        match entry.attr_value(gimli::DW_AT_encoding)? {
             AttributeValue::Encoding(enc) => Some(enc),
             _ => None,
         }
@@ -1442,7 +1434,7 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
         unit_index: usize,
         entry: &DebuggingInformationEntry<Reader<'a>>,
     ) -> Option<GlobalTypeKey> {
-        match entry.attr_value(gimli::DW_AT_type).ok()?? {
+        match entry.attr_value(gimli::DW_AT_type)? {
             // Unit-local reference (common in GCC)
             AttributeValue::UnitRef(offset) => Some(GlobalTypeKey::unit_local(
                 unit_index,
@@ -1458,7 +1450,7 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
 
     /// Legacy helper - get type ref as UnitOffset (for backwards compatibility where needed)
     fn get_type_ref(&self, entry: &DebuggingInformationEntry<Reader<'a>>) -> Option<UnitOffset> {
-        match entry.attr_value(gimli::DW_AT_type).ok()?? {
+        match entry.attr_value(gimli::DW_AT_type)? {
             AttributeValue::UnitRef(offset) => Some(offset),
             _ => None,
         }
@@ -1469,7 +1461,7 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
         unit: &Unit<Reader<'a>>,
         entry: &DebuggingInformationEntry<Reader<'a>>,
     ) -> Option<u64> {
-        match entry.attr_value(gimli::DW_AT_data_member_location).ok()?? {
+        match entry.attr_value(gimli::DW_AT_data_member_location)? {
             // Direct offset values (common in DWARF 4+, GCC)
             AttributeValue::Udata(offset) => Some(offset),
             AttributeValue::Data1(offset) => Some(offset as u64),
@@ -1530,7 +1522,7 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
 
     fn get_bit_offset(&self, entry: &DebuggingInformationEntry<Reader<'a>>) -> Option<u64> {
         // Try DW_AT_data_bit_offset first (DWARF 4+)
-        if let Ok(Some(attr)) = entry.attr_value(gimli::DW_AT_data_bit_offset) {
+        if let Some(attr) = entry.attr_value(gimli::DW_AT_data_bit_offset) {
             return match attr {
                 AttributeValue::Udata(v) => Some(v),
                 AttributeValue::Data1(v) => Some(v as u64),
@@ -1542,7 +1534,7 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
         }
 
         // Fall back to DW_AT_bit_offset (DWARF 3)
-        match entry.attr_value(gimli::DW_AT_bit_offset).ok()?? {
+        match entry.attr_value(gimli::DW_AT_bit_offset)? {
             AttributeValue::Udata(v) => Some(v),
             AttributeValue::Data1(v) => Some(v as u64),
             AttributeValue::Data2(v) => Some(v as u64),
@@ -1553,7 +1545,7 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
     }
 
     fn get_bit_size(&self, entry: &DebuggingInformationEntry<Reader<'a>>) -> Option<u64> {
-        match entry.attr_value(gimli::DW_AT_bit_size).ok()?? {
+        match entry.attr_value(gimli::DW_AT_bit_size)? {
             AttributeValue::Udata(v) => Some(v),
             AttributeValue::Data1(v) => Some(v as u64),
             AttributeValue::Data2(v) => Some(v as u64),
@@ -1564,7 +1556,7 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
     }
 
     fn get_const_value(&self, entry: &DebuggingInformationEntry<Reader<'a>>) -> Option<i64> {
-        match entry.attr_value(gimli::DW_AT_const_value).ok()?? {
+        match entry.attr_value(gimli::DW_AT_const_value)? {
             AttributeValue::Sdata(v) => Some(v),
             AttributeValue::Udata(v) => Some(v as i64),
             AttributeValue::Data1(v) => Some(v as i64),
@@ -1596,16 +1588,8 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
         }
 
         // 1. Check for compile-time constant (has value but may not have location)
-        let has_const_value = entry
-            .attr_value(gimli::DW_AT_const_value)
-            .ok()
-            .flatten()
-            .is_some();
-        let has_location = entry
-            .attr_value(gimli::DW_AT_location)
-            .ok()
-            .flatten()
-            .is_some();
+        let has_const_value = entry.attr_value(gimli::DW_AT_const_value).is_some();
+        let has_location = entry.attr_value(gimli::DW_AT_location).is_some();
 
         if has_const_value && !has_location {
             let value = self.get_const_value(entry);
@@ -1633,7 +1617,7 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
         unit: &Unit<Reader<'a>>,
         entry: &DebuggingInformationEntry<Reader<'a>>,
     ) -> VariableStatus {
-        let attr = match entry.attr_value(gimli::DW_AT_location).ok().flatten() {
+        let attr = match entry.attr_value(gimli::DW_AT_location) {
             Some(attr) => attr,
             None => return VariableStatus::NoLocation,
         };
@@ -1867,6 +1851,13 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
                         reason: "Requires parameter reference".to_string(),
                     };
                 }
+                gimli::EvaluationResult::RequiresWasmLocal { .. }
+                | gimli::EvaluationResult::RequiresWasmGlobal { .. }
+                | gimli::EvaluationResult::RequiresWasmStack { .. } => {
+                    return VariableStatus::LocalVariable {
+                        reason: "Requires a WebAssembly runtime value".to_string(),
+                    };
+                }
             }
         }
     }
@@ -1964,7 +1955,10 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
                 | gimli::EvaluationResult::RequiresCallFrameCfa
                 | gimli::EvaluationResult::RequiresAtLocation(_)
                 | gimli::EvaluationResult::RequiresEntryValue(_)
-                | gimli::EvaluationResult::RequiresParameterRef(_) => {
+                | gimli::EvaluationResult::RequiresParameterRef(_)
+                | gimli::EvaluationResult::RequiresWasmLocal { .. }
+                | gimli::EvaluationResult::RequiresWasmGlobal { .. }
+                | gimli::EvaluationResult::RequiresWasmStack { .. } => {
                     // These are for local variables - we can't resolve them statically
                     return None;
                 }
@@ -1976,7 +1970,7 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
         &self,
         entry: &DebuggingInformationEntry<Reader<'a>>,
     ) -> Option<gimli::DwVirtuality> {
-        match entry.attr_value(gimli::DW_AT_virtuality).ok()?? {
+        match entry.attr_value(gimli::DW_AT_virtuality)? {
             AttributeValue::Virtuality(v) => Some(v),
             _ => None,
         }
@@ -1984,29 +1978,29 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
 
     fn has_declaration_attr(&self, entry: &DebuggingInformationEntry<Reader<'a>>) -> bool {
         matches!(
-            entry.attr_value(gimli::DW_AT_declaration).ok(),
-            Some(Some(AttributeValue::Flag(true)))
+            entry.attr_value(gimli::DW_AT_declaration),
+            Some(AttributeValue::Flag(true))
         )
     }
 
     fn has_external_attr(&self, entry: &DebuggingInformationEntry<Reader<'a>>) -> bool {
         matches!(
-            entry.attr_value(gimli::DW_AT_external).ok(),
-            Some(Some(AttributeValue::Flag(true)))
+            entry.attr_value(gimli::DW_AT_external),
+            Some(AttributeValue::Flag(true))
         )
     }
 
     fn has_enum_class_attr(&self, entry: &DebuggingInformationEntry<Reader<'a>>) -> bool {
         matches!(
-            entry.attr_value(gimli::DW_AT_enum_class).ok(),
-            Some(Some(AttributeValue::Flag(true)))
+            entry.attr_value(gimli::DW_AT_enum_class),
+            Some(AttributeValue::Flag(true))
         )
     }
 
     fn has_artificial_attr(&self, entry: &DebuggingInformationEntry<Reader<'a>>) -> bool {
         matches!(
-            entry.attr_value(gimli::DW_AT_artificial).ok(),
-            Some(Some(AttributeValue::Flag(true)))
+            entry.attr_value(gimli::DW_AT_artificial),
+            Some(AttributeValue::Flag(true))
         )
     }
 
@@ -2022,7 +2016,7 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
                 while let Ok(Some(child)) = children.next() {
                     if child.entry().tag() == gimli::DW_TAG_subrange_type {
                         // Try DW_AT_count first
-                        if let Ok(Some(attr)) = child.entry().attr_value(gimli::DW_AT_count) {
+                        if let Some(attr) = child.entry().attr_value(gimli::DW_AT_count) {
                             return match attr {
                                 AttributeValue::Udata(v) => Some(v),
                                 AttributeValue::Data1(v) => Some(v as u64),
@@ -2033,7 +2027,7 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
                             };
                         }
                         // Try DW_AT_upper_bound (count = upper_bound + 1)
-                        if let Ok(Some(attr)) = child.entry().attr_value(gimli::DW_AT_upper_bound) {
+                        if let Some(attr) = child.entry().attr_value(gimli::DW_AT_upper_bound) {
                             return match attr {
                                 AttributeValue::Udata(v) => Some(v + 1),
                                 AttributeValue::Data1(v) => Some(v as u64 + 1),

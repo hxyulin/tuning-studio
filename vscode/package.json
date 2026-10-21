@@ -7,7 +7,7 @@
   "license": "MIT",
   "private": true,
   "engines": {
-    "vscode": "^1.90.0"
+    "vscode": "^1.140.0"
   },
   "categories": [
     "Debuggers",
@@ -215,10 +215,10 @@
     "test:trace": "node scripts/taskTrace.mjs"
   },
   "devDependencies": {
-    "@types/node": "^20",
-    "@types/vscode": "~1.90.0",
-    "esbuild": "^0.25.0",
-    "typescript": "~5.9.0"
+    "@types/node": "^26",
+    "@types/vscode": "~1.140.0",
+    "esbuild": "^0.28.2",
+    "typescript": "~7.0.2"
   },
   "repository": {
     "type": "git",

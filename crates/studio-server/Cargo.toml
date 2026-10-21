@@ -35,4 +35,4 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "fs", "signal", "
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
-tungstenite = "0.29"
+tungstenite = "0.30"

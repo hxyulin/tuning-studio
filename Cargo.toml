@@ -23,8 +23,8 @@ repository = "https://github.com/hxyulin/tuning-tools"
 authors = ["hxyulin <hxyulin@proton.me>"]
 
 [workspace.dependencies]
-gimli = { version = "0.32", default-features = false, features = ["read", "std"] }
-object = { version = "0.38", default-features = false, features = ["read", "elf", "std"] }
+gimli = { version = "0.34", default-features = false, features = ["read", "std"] }
+object = { version = "0.40", default-features = false, features = ["read", "elf", "std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

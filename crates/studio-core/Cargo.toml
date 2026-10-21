@@ -10,7 +10,7 @@ authors.workspace = true
 
 [dependencies]
 tuning-studio-api = { path = "../tuning-studio-api", version = "0.1.2" }
-defmt-decoder = "1.1"
+defmt-decoder = "1.2"
 object = { workspace = true }
 serde = { workspace = true }
 studio-carriers = { package = "tuning-studio-carriers", path = "../studio-carriers", version = "0.1.2" }

@@ -1,6 +1,12 @@
 # Changelog
 
-## 0.1.2 (unreleased)
+## Unreleased
+
+- Dependencies at their latest versions, including gimli 0.34, object 0.40, mcap 0.26,
+  libloading 0.9, cpp_demangle 0.5, TypeScript 7 and esbuild 0.28.
+- The VS Code extension requires VS Code 1.140 or later, matching its `@types/vscode`.
+
+## 0.1.2 — 2026-10-21
 
 - Standalone local browser host with embedded frontend and authenticated WebSocket acquisition.
 - Explicit attach/reset/flash startup modes and per-platform server archives with checksums.
