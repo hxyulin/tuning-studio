@@ -126,11 +126,14 @@ jobs:
               continue
             fi
             # The server and desktop crates embed the ignored frontend build from npm run build.
+            # tauri-build writes gen/schemas beside the desktop manifest, which cargo's tarball
+            # verification rejects; the build job has already compiled it for every target.
             case "$package" in
-              tuning-studio-server|tuning-studio) dirty=--allow-dirty ;;
-              *) dirty= ;;
+              tuning-studio-server) flags=(--allow-dirty) ;;
+              tuning-studio) flags=(--allow-dirty --no-verify) ;;
+              *) flags=() ;;
             esac
-            cargo publish --locked $dirty -p "$package"
+            cargo publish --locked "${flags[@]}" -p "$package"
           done
 
   release:

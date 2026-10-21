@@ -77,7 +77,9 @@ A partially completed publish must be assessed before rerunning: already-publish
 versions cannot be overwritten. Bump versions for changed contents. With unchanged contents,
 rerun with **Create release** off: the job skips versions already on crates.io.
 `tuning-studio-server` and `tuning-studio` publish with `--allow-dirty`, since they embed the
-ignored frontend build.
+ignored frontend build. `tuning-studio` also skips tarball verification: `tauri-build` writes
+`gen/schemas` beside its manifest, which `cargo publish` rejects, and the build job has already
+compiled it for every target.
 
 The initial full workspace cannot be packaged against crates.io until its new
 internal dependencies have been published. The build job verifies the two
