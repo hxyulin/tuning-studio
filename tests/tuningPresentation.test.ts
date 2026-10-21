@@ -12,7 +12,8 @@ const node = {
   ref: { symbol: "demo::BLINK_HZ", steps: [] }, label: "BLINK_HZ", path: "demo::BLINK_HZ",
   address: 0x2000, size: 48, typeName: "Entry", wrapper: "Tunable", kind: "struct",
   scalar: null, expandable: true, childCount: 12, readable: true,
-} as SymbolNode;
+  status: null, bitOffset: null, bitSize: null, discrValue: null, location: null,
+} satisfies SymbolNode;
 
 test("catalog-backed Entries become typed applied-value rows without losing their identity", () => {
   assert.equal(tuningEntry(node, catalog), entry);

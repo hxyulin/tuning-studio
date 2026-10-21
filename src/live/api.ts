@@ -1,5 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { Catalog, NodeRef, SymbolNode, TaskPoint } from "../elf/api";
+import type { Catalog, NodeRef, SymbolNode, TaskPoint } from "../elf/api";
 
 export interface ProbeInfo {
   selector: string;

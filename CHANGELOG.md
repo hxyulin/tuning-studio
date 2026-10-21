@@ -5,6 +5,8 @@
 - Dependencies at their latest versions, including gimli 0.34, object 0.40, mcap 0.26,
   libloading 0.9, cpp_demangle 0.5, TypeScript 7 and esbuild 0.28.
 - The VS Code extension requires VS Code 1.140 or later, matching its `@types/vscode`.
+- TypeScript builds use `verbatimModuleSyntax` and `erasableSyntaxOnly`; frontend tests and the
+  VS Code extension are type-checked in CI. Both packages also check cleanly with tsrs.
 
 ## 0.1.2 — 2026-10-21
 

@@ -15,8 +15,11 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      - run: npm --prefix vscode ci
+      - run: npm --prefix vscode run typecheck
 
   rust:
     strategy:

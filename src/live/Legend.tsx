@@ -3,9 +3,9 @@ import { MenuItem, Popover } from "../ui";
 import { host } from "../host";
 import { formatLive, formatTick } from "./format";
 import { samples } from "./samples";
-import { Readout, useReadout } from "./readout";
+import { type Readout, useReadout } from "./readout";
 import type { Lane } from "./Scope";
-import { MAX_TRACES, Watch, watchName } from "./useWatches";
+import { MAX_TRACES, type Watch, watchName } from "./useWatches";
 
 /** Values change far faster than people read; repaint at 10 Hz, and on every cursor move */
 const REFRESH_MS = 100;

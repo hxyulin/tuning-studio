@@ -5,7 +5,7 @@ import type { OpenedElf, SymbolNode } from "../../src/elf/api";
 import type { ConnectRequest, SessionEvent } from "../../src/live/api";
 
 import { launchDefaults } from "./launch";
-import { ProbeGuard, ProbeHolder } from "./probeGuard";
+import { ProbeGuard, type ProbeHolder } from "./probeGuard";
 import { findServer } from "./serverPath";
 import { StudioServer } from "./server";
 
@@ -57,12 +57,21 @@ export class StudioSession implements ProbeHolder {
     this.postMessage({ type: "watches_pending" });
   }
 
+  private readonly context: vscode.ExtensionContext;
+  private readonly guard: ProbeGuard;
+  private readonly log: vscode.OutputChannel;
+  readonly firmwareLog: vscode.OutputChannel;
+
   constructor(
-    private readonly context: vscode.ExtensionContext,
-    private readonly guard: ProbeGuard,
-    private readonly log: vscode.OutputChannel,
-    readonly firmwareLog: vscode.OutputChannel,
+    context: vscode.ExtensionContext,
+    guard: ProbeGuard,
+    log: vscode.OutputChannel,
+    firmwareLog: vscode.OutputChannel,
   ) {
+    this.context = context;
+    this.guard = guard;
+    this.log = log;
+    this.firmwareLog = firmwareLog;
     this.disposables.push(guard.add(this), this.messages, this.changes);
   }
 

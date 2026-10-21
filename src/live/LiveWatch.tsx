@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Catalog, CatalogEntry, NodeRef, RootNode, SymbolNode } from "../elf/api";
-import { RowNote, SymbolTree } from "../elf/SymbolTree";
+import type { Catalog, CatalogEntry, NodeRef, RootNode, SymbolNode } from "../elf/api";
+import { type RowNote, SymbolTree } from "../elf/SymbolTree";
 import { host } from "../host";
 import { button, field } from "../ui";
-import { Carrier, TuneValue, ValueRead } from "./api";
+import type { Carrier, TuneValue, ValueRead } from "./api";
 import { formatValue } from "./format";
 
 import type { Tune } from "./useSession";

@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { RootNode, SymbolNode, Task, TaskPoint, hex, shortLocation } from "../elf/api";
-import { RowNote, SymbolTree } from "../elf/SymbolTree";
+import { type RootNode, type SymbolNode, type Task, type TaskPoint, hex, shortLocation } from "../elf/api";
+import { type RowNote, SymbolTree } from "../elf/SymbolTree";
 import { host } from "../host";
-import { Carrier, TaskSnapshot, TaskState, TaskStatus, ValueRead } from "./api";
+import type { Carrier, TaskSnapshot, TaskState, TaskStatus, ValueRead } from "./api";
 import { TaskTimeline } from "./TaskTimeline";
 import { formatValue } from "./format";
 

@@ -1,6 +1,6 @@
 import { useLayoutEffect, useMemo, useRef } from "react";
 import { ghostButton } from "../ui";
-import { LogLine, StreamState } from "./api";
+import type { LogLine, StreamState } from "./api";
 
 const LEVELS = ["error", "warn", "info", "debug", "trace"];
 const SHOWN = 1000;

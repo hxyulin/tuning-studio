@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Task } from "../elf/api";
 import { host } from "../host";
 import { button, field as input } from "../ui";
-import { emptyTrace, ingestTrace, traceViewport, PollSpan, TraceModel } from "./traceModel";
+import { emptyTrace, ingestTrace, traceViewport, type PollSpan, type TraceModel } from "./traceModel";
 
 export function TaskTimeline({ tasks, live, select }: { tasks: Task[]; live: boolean; select: (path: string) => void }) {
   const [model, setModel] = useState<TraceModel>(emptyTrace);

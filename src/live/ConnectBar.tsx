@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { ConnectDefaults, host } from "../host";
+import { type ConnectDefaults, host } from "../host";
 import { Segmented, button, field, primaryButton } from "../ui";
 import type * as api from "./api";
 import { useHostStatus } from "./useHostStatus";
 import { connectionProblem } from "./connection";
-import { Link } from "./useSession";
+import type { Link } from "./useSession";
 
 const RATES = [10, 50, 100, 200, 500, 1000];
 /** SWD clock; faster makes large reads quicker but needs short, clean wiring */

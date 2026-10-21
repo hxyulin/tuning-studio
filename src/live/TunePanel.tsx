@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { Catalog, CatalogEntry } from "../elf/api";
+import type { Catalog, CatalogEntry } from "../elf/api";
 import { host } from "../host";
 import { field, ghostButton, primaryButton } from "../ui";
 import { formatValue } from "./format";
-import { Tune } from "./useSession";
+import type { Tune } from "./useSession";
 import { TuneSlider } from "./TuneSlider";
 import { followSent, SAVE_UNSUPPORTED, saveUnsupported, type Sent } from "./tuningPresentation";
 

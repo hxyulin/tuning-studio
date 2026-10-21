@@ -38,7 +38,10 @@ export class StudioServer {
   private exited = false;
   private readyWaiter!: { resolve: (r: Ready) => void; reject: (e: Error) => void };
 
-  constructor(path: string, args: string[], private readonly handlers: ServerHandlers) {
+  private readonly handlers: ServerHandlers;
+
+  constructor(path: string, args: string[], handlers: ServerHandlers) {
+    this.handlers = handlers;
     this.ready = new Promise((resolve, reject) => (this.readyWaiter = { resolve, reject }));
     this.ready.catch(() => {}); // a server that never starts also shows up as `exit`
     this.child = spawn(path, args, { stdio: ["pipe", "pipe", "pipe"] });

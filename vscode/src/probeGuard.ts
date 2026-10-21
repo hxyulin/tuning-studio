@@ -25,7 +25,10 @@ export class ProbeGuard implements vscode.Disposable {
   private readonly holders = new Set<ProbeHolder>();
   private readonly disposables: vscode.Disposable[] = [];
 
-  constructor(private readonly log: vscode.OutputChannel) {
+  private readonly log: vscode.OutputChannel;
+
+  constructor(log: vscode.OutputChannel) {
+    this.log = log;
     const active = vscode.debug.activeDebugSession;
     if (active?.type === DEBUG_TYPE) this.sessions.set(active.id, active.name);
 

@@ -1,12 +1,12 @@
 import { useCallback, useRef, useState } from "react";
 import { Popover, ghostButton } from "../ui";
 import { host } from "../host";
-import { OpenedElf } from "../elf/api";
-import { CoreState, Stats } from "./api";
+import type { OpenedElf } from "../elf/api";
+import type { CoreState, Stats } from "./api";
 import { formatMicros, formatRate } from "./format";
 import { useCapture } from "./useCapture";
 import { StreamControl } from "./StreamControl";
-import { Link } from "./useSession";
+import type { Link } from "./useSession";
 
 const coreText: Record<CoreState, string> = {
   running: "Running",

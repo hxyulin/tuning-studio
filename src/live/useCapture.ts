@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { host } from "../host";
-import { DataStreamState, RecordingState, STREAM_STOPPED } from "./recording";
+import { type DataStreamState, type RecordingState, STREAM_STOPPED } from "./recording";
 
 /** The recording (current, or the last one) and the TCP stream, kept current */
 export function useCapture() {

@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import * as vscode from "vscode";
-import { StudioSession, STORAGE_KEY, FromPage } from "./session";
+import { StudioSession, STORAGE_KEY, type FromPage } from "./session";
 
 export const VIEW_TYPE = "tuningStudio";
 
@@ -27,11 +27,12 @@ export class StudioPanel {
     StudioPanel.current = new StudioPanel(panel, context, session);
   }
 
-  private constructor(
-    private readonly panel: vscode.WebviewPanel,
-    private readonly context: vscode.ExtensionContext,
-    session: StudioSession,
-  ) {
+  private readonly panel: vscode.WebviewPanel;
+  private readonly context: vscode.ExtensionContext;
+
+  private constructor(panel: vscode.WebviewPanel, context: vscode.ExtensionContext, session: StudioSession) {
+    this.panel = panel;
+    this.context = context;
     const media = vscode.Uri.joinPath(context.extensionUri, "media");
     panel.webview.options = { enableScripts: true, localResourceRoots: [media] };
     this.disposables.push(

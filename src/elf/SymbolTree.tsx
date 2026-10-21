@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { host } from "../host";
-import { Children, RootNode, SymbolNode } from "./api";
+import type { Children, RootNode, SymbolNode } from "./api";
 
 type ChildState = { status: "loading" } | { status: "error"; message: string } | ({ status: "ok"; offset: number } & Children);
 

@@ -1,4 +1,4 @@
-import { Scalar } from "../elf/api";
+import type { Scalar } from "../elf/api";
 
 export function formatValue(value: number | undefined, scalar: Scalar | null): string {
   if (value === undefined) return "";

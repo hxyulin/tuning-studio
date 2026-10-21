@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { CatalogEntry, NodeRef, OpenedElf, Scalar, SymbolNode } from "../elf/api";
+import type { CatalogEntry, NodeRef, OpenedElf, Scalar, SymbolNode } from "../elf/api";
 import { host } from "../host";
 import { samples } from "./samples";
 

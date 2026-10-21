@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import { Catalog } from "../elf/api";
+import type { Catalog } from "../elf/api";
 import { host } from "../host";
 import type * as api from "./api";
 import { saveUnsupported } from "./tuningPresentation";

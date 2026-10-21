@@ -1,5 +1,5 @@
 import { button } from "../ui";
-import { RootNode, SymbolNode, hex, scalarName, shortLocation } from "./api";
+import { type RootNode, type SymbolNode, hex, scalarName, shortLocation } from "./api";
 import { MemoryStrip } from "./MemoryStrip";
 import { watchable } from "./SymbolTree";
 

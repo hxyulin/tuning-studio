@@ -5,14 +5,20 @@ import { join } from "node:path";
 type Listener<T> = (value: T) => unknown;
 
 export class Disposable {
-  constructor(private readonly fn: () => void) {}
+  private readonly fn: () => void;
+  constructor(fn: () => void) {
+    this.fn = fn;
+  }
   dispose() {
     this.fn();
   }
 }
 
 export class Uri {
-  constructor(readonly fsPath: string) {}
+  readonly fsPath: string;
+  constructor(fsPath: string) {
+    this.fsPath = fsPath;
+  }
   static file(path: string) {
     return new Uri(path);
   }
@@ -25,9 +31,7 @@ export class Uri {
   }
 }
 
-export enum ViewColumn {
-  Active = -1,
-}
+export const ViewColumn = { Active: -1 } as const;
 
 function emitter<T>() {
   const listeners = new Set<Listener<T>>();
@@ -78,15 +82,39 @@ export class EventEmitter<T> {
   fire(value: T) { this.emitter.fire(value); }
   dispose() {}
 }
-export enum StatusBarAlignment { Left = 1, Right = 2 }
-export enum TreeItemCollapsibleState { None = 0, Collapsed = 1, Expanded = 2 }
+export const StatusBarAlignment = { Left: 1, Right: 2 } as const;
+export const TreeItemCollapsibleState = { None: 0, Collapsed: 1, Expanded: 2 } as const;
 export class TreeItem {
-  constructor(public label: string, public collapsibleState = TreeItemCollapsibleState.None) {}
+  label: string;
+  collapsibleState: number;
+  constructor(label: string, collapsibleState: number = TreeItemCollapsibleState.None) {
+    this.label = label;
+    this.collapsibleState = collapsibleState;
+  }
 }
-export class Position { constructor(public line: number, public character: number) {} }
-export class Range { constructor(public start: Position, public end: Position) {} }
+export class Position {
+  line: number;
+  character: number;
+  constructor(line: number, character: number) {
+    this.line = line;
+    this.character = character;
+  }
+}
+export class Range {
+  start: Position;
+  end: Position;
+  constructor(start: Position, end: Position) {
+    this.start = start;
+    this.end = end;
+  }
+}
 export class Selection extends Range {}
-export class ThemeIcon { constructor(public id: string) {} }
+export class ThemeIcon {
+  id: string;
+  constructor(id: string) {
+    this.id = id;
+  }
+}
 
 export const window = {
   showTextDocument: async () => ({ selection: undefined as unknown, revealRange() {} }),

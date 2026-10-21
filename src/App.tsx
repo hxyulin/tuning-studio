@@ -1,18 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { OpenedElf, SymbolNode, refForPath } from "./elf/api";
+import { type OpenedElf, type SymbolNode, refForPath } from "./elf/api";
 import { SymbolTree } from "./elf/SymbolTree";
 import { NodeDetails } from "./elf/NodeDetails";
-import { ConnectDefaults, HostStartup, WatchSeed, host } from "./host";
+import { type ConnectDefaults, type HostStartup, type WatchSeed, host } from "./host";
 import type { ConnectRequest } from "./live/api";
 import { CanPanel } from "./can/CanPanel";
 import { LiveWatch } from "./live/LiveWatch";
 import { ConnectBar } from "./live/ConnectBar";
-import { LogFilter, LogTools, LogView, defaultLogFilter } from "./live/LogConsole";
+import { type LogFilter, LogTools, LogView, defaultLogFilter } from "./live/LogConsole";
 import { Scope } from "./live/Scope";
 import { StatusBar } from "./live/StatusBar";
 import { TasksView } from "./live/TasksView";
 import { TunePanel } from "./live/TunePanel";
-import { NewWatch, Watch, useWatches } from "./live/useWatches";
+import { type NewWatch, type Watch, useWatches } from "./live/useWatches";
 import { useSession } from "./live/useSession";
 import { Tab, TabStrip, button, ghostButton, primaryButton } from "./ui";
 

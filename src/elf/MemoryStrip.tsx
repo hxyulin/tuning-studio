@@ -1,4 +1,4 @@
-import { RootNode, SymbolNode, hex } from "./api";
+import { type RootNode, type SymbolNode, hex } from "./api";
 
 /** Where `node` sits among the statics sharing its 16 MiB address region. */
 export function MemoryStrip({ node, roots }: { node: SymbolNode; roots: RootNode[] }) {

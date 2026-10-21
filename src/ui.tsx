@@ -1,4 +1,4 @@
-import { CSSProperties, ReactNode, RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type CSSProperties, type ReactNode, type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 export const button = "rounded-sm border border-rule bg-panel px-2.5 py-0.5 hover:bg-sunken disabled:opacity-50 disabled:hover:bg-panel";

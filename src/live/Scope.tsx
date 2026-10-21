@@ -4,11 +4,11 @@ import "uplot/dist/uPlot.min.css";
 import { host } from "../host";
 import { Segmented, Popover, button, field, ghostButton } from "../ui";
 import { formatTicks } from "./format";
-import { Legend, LegendActions } from "./Legend";
-import { Readout, newReadout, notify, useReadout } from "./readout";
+import { Legend, type LegendActions } from "./Legend";
+import { type Readout, newReadout, notify, useReadout } from "./readout";
 import { RecordButton, RecordNotice, useRecorder } from "./RecordControl";
 import { samples } from "./samples";
-import { Watch } from "./useWatches";
+import type { Watch } from "./useWatches";
 
 const WINDOWS = [2, 5, 10, 30, 60];
 const SETTINGS_KEY = "scope";

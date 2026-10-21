@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { host } from "../host";
 import { MenuItem, Popover, button, ghostButton } from "../ui";
-import { CsvExport, RecordingState, csvPathFor, formatBytes, formatElapsed } from "./recording";
+import { type CsvExport, type RecordingState, csvPathFor, formatBytes, formatElapsed } from "./recording";
 import { useCapture } from "./useCapture";
 import { useHostStatus } from "./useHostStatus";
 
