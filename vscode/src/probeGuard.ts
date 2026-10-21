@@ -2,6 +2,7 @@
 // not take the probe; when one starts while the studio holds it, the studio lets go first so the
 // debugger's attach does not fail.
 
+import { Effect } from "effect";
 import * as vscode from "vscode";
 
 export const DEBUG_TYPE = "probe-rs-debug";
@@ -109,7 +110,9 @@ export class ProbeGuard implements vscode.Disposable {
     const holding = [...this.holders].filter((h) => h.holdsProbe());
     if (!holding.length) return;
     this.log.appendLine(`releasing the probe for debug session "${name}"`);
-    await Promise.all(holding.map((h) => h.releaseProbe(name).catch(() => {})));
+    // A holder that fails to let go is not waited on: the debugger's attach reports the conflict
+    const release = (h: ProbeHolder) => Effect.tryPromise(() => h.releaseProbe(name)).pipe(Effect.ignore);
+    await Effect.runPromise(Effect.forEach(holding, release, { concurrency: "unbounded", discard: true }));
   }
 
   private changed() {

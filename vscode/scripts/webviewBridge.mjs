@@ -13,6 +13,8 @@ const calls = [];
 const context = {
   exports: {}, module: { exports: {} },
   ArrayBuffer, Uint8Array,
+  // Effect schedules call timeouts and fiber yields on the page's timers
+  setTimeout, clearTimeout, queueMicrotask,
   document: {
     body: { classList: { contains: () => false } },
     documentElement: { dataset: {} },

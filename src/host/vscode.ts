@@ -6,6 +6,7 @@ import type { SymbolNode } from "../elf/api";
 import type { ConnectRequest, SessionEvent } from "../live/api";
 import type { AppEvent } from "../live/recording";
 import { STANDALONE_STATUS, appEventHub } from "./common";
+import { PendingCalls, runCall } from "./rpc";
 import type { Host, HostStartup, HostStatus, HostStorage, SessionHandlers } from "./types";
 
 interface VsCodeApi {
@@ -23,7 +24,7 @@ type Incoming =
   | { type: "refresh" }
   | { type: "watches_pending" }
   | { type: "result"; id: number; ok: true; result: unknown }
-  | { type: "result"; id: number; ok: false; error: string }
+  | { type: "result"; id: number; ok: false; error: string; kind?: string }
   | { type: "event"; session: number; event: SessionEvent }
   | { type: "frame"; session: number; data: ArrayBuffer | Uint8Array }
   | { type: "status"; status: HostStatus }
@@ -68,8 +69,7 @@ function followTheme() {
 export function createVsCodeHost(): Host {
   followTheme();
   const vscode = acquireVsCodeApi();
-  const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
-  let nextCall = 1;
+  const pending = new PendingCalls();
   let resumeSession: number | undefined;
   let watchListener: ((nodes: SymbolNode[]) => void) | undefined;
   const takeWatches = () => {
@@ -106,14 +106,10 @@ export function createVsCodeHost(): Host {
       case "watches_pending":
         takeWatches();
         break;
-      case "result": {
-        const call = pending.get(m.id);
-        if (!call) return;
-        pending.delete(m.id);
-        if (m.ok) call.resolve(m.result);
-        else call.reject(new Error(m.error));
+      case "result":
+        if (m.ok) pending.succeed(m.id, m.result);
+        else pending.fail(m.id, m.error, m.kind);
         break;
-      }
       case "event":
         if (session?.id === m.session) session.handlers.event(m.event);
         break;
@@ -131,11 +127,7 @@ export function createVsCodeHost(): Host {
   });
 
   function call<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
-    const id = nextCall++;
-    return new Promise<T>((resolve, reject) => {
-      pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
-      vscode.postMessage({ type: "call", id, method, params });
-    });
+    return runCall(pending.call<T>(method, (id) => vscode.postMessage({ type: "call", id, method, params })));
   }
 
   // The first status comes as an answer, so a listener never waits for a change

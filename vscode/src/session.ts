@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import * as vscode from "vscode";
 import type { OpenedElf, SymbolNode } from "../../src/elf/api";
 import type { ConnectRequest, SessionEvent } from "../../src/live/api";
+import { errorKind } from "../../src/host/rpc";
 
 import { launchDefaults } from "./launch";
 import { ProbeGuard, type ProbeHolder } from "./probeGuard";
@@ -161,7 +162,7 @@ export class StudioSession implements ProbeHolder {
       void reply({ type: "result", id: m.id, ok: true, result: result ?? null });
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);
-      void reply({ type: "result", id: m.id, ok: false, error });
+      void reply({ type: "result", id: m.id, ok: false, error, kind: errorKind(e) });
     }
   }
 

@@ -28,13 +28,13 @@
       },
       {
         "command": "tuningStudio.openElf",
-        "title": "Open Firmware ELF\u2026",
+        "title": "Open Firmware ELF…",
         "category": "Tuning Studio",
         "icon": "$(folder-opened)"
       },
       {
         "command": "tuningStudio.connect",
-        "title": "Connect Target\u2026",
+        "title": "Connect Target…",
         "category": "Tuning Studio",
         "icon": "$(plug)",
         "enablement": "!tuningStudio.connected"
@@ -68,7 +68,7 @@
       },
       {
         "command": "tuningStudio.targetActions",
-        "title": "Target Actions\u2026",
+        "title": "Target Actions…",
         "category": "Tuning Studio"
       },
       {
@@ -86,7 +86,7 @@
       {
         "command": "tuningStudio.setRate",
         "category": "Tuning Studio",
-        "title": "Change Sample Rate\u2026",
+        "title": "Change Sample Rate…",
         "enablement": "tuningStudio.connected"
       },
       {

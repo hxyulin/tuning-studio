@@ -1,6 +1,8 @@
 import type { ConnectRequest, SessionEvent } from "../live/api";
 import type { AppEvent } from "../live/recording";
+import { Deferred, Effect } from "effect";
 import { appEventHub, fixedStatus, localStorageBacked, STANDALONE_STATUS } from "./common";
+import { Disconnected, HostError, PendingCalls, runCall } from "./rpc";
 import type { Host, HostStartup, SessionHandlers } from "./types";
 
 export function createWebHost(): Host {
@@ -8,22 +10,23 @@ export function createWebHost(): Host {
   const endpoint = (path: string) => `${path}?token=${encodeURIComponent(token)}`;
   const socket = new WebSocket(`${location.origin.replace("http", "ws")}${endpoint("/ws")}`);
   socket.binaryType = "arraybuffer";
-  const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
-  let nextCall = 1;
+  const pending = new PendingCalls();
   let nextSession = 1;
   let session: { id: number; handlers: SessionHandlers } | null = null;
   const appEvents = appEventHub();
   const status = structuredClone(STANDALONE_STATUS);
   status.features.reveal = { available: false, reason: "Files are saved by the local server" };
-  const ready = new Promise<void>((resolve, reject) => {
-    socket.onopen = () => resolve();
-    socket.onerror = () => reject(new Error("Could not reach the local Tuning Studio server"));
-  });
+  const ready = Deferred.makeUnsafe<void, Disconnected>();
+  socket.onopen = () => Deferred.doneUnsafe(ready, Effect.void);
+  socket.onerror = () =>
+    Deferred.doneUnsafe(ready, Effect.fail(new Disconnected({ message: "Could not reach the local Tuning Studio server" })));
   socket.onclose = () => {
-    const error = new Error("Local server disconnected. Close other Studio tabs, then reload this page.");
-    pending.forEach(p => p.reject(error));
-    pending.clear();
-    session?.handlers.event({ type: "status", state: "disconnected", message: error.message });
+    // Calls quote their failure inside longer messages, so theirs has no closing stop
+    const lost = "Local server disconnected; reload this page";
+    Deferred.doneUnsafe(ready, Effect.fail(new Disconnected({ message: lost })));
+    pending.disconnect(lost);
+    const message = "Local server disconnected. Close other Studio tabs, then reload this page.";
+    session?.handlers.event({ type: "status", state: "disconnected", message });
   };
   socket.onmessage = (event: MessageEvent<ArrayBuffer>) => {
     const bytes = new Uint8Array(event.data);
@@ -34,23 +37,15 @@ export function createWebHost(): Host {
     }
     const message = JSON.parse(new TextDecoder().decode(bytes.subarray(5)));
     if (message.type === "response") {
-      const request = pending.get(message.id);
-      if (!request) return;
-      pending.delete(message.id);
-      if (message.ok) request.resolve(message.result);
-      else request.reject(new Error(message.error));
+      if (message.ok) pending.succeed(message.id, message.result);
+      else pending.fail(message.id, message.error);
     } else if (message.type === "event" && message.session === session?.id) {
       session?.handlers.event(message.event as SessionEvent);
     } else if (message.type === "app_event") appEvents.emit(message.event as AppEvent);
   };
-  async function call<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
-    await ready;
-    if (socket.readyState !== WebSocket.OPEN) throw new Error("Local server disconnected; reload this page");
-    const id = nextCall++;
-    return new Promise<T>((resolve, reject) => {
-      pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
-      socket.send(JSON.stringify({ id, method, params }));
-    });
+  function call<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+    const send = pending.call<T>(method, (id) => socket.send(JSON.stringify({ id, method, params })));
+    return runCall(Deferred.await(ready).pipe(Effect.andThen(send)));
   }
   async function pickFile(): Promise<string | null> {
     const input = document.createElement("input");
@@ -61,9 +56,15 @@ export function createWebHost(): Host {
       input.click();
     });
     if (!file) return null;
-    const response = await fetch(endpoint("/upload"), { method: "POST", body: file });
-    if (!response.ok) throw new Error(`Could not upload file: ${response.status}`);
-    return (await response.json()).path as string;
+    const upload = Effect.tryPromise({
+      try: async () => {
+        const response = await fetch(endpoint("/upload"), { method: "POST", body: file });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return (await response.json()).path as string;
+      },
+      catch: (e) => new HostError({ method: "upload", message: `Could not upload file: ${e}` }),
+    });
+    return runCall(upload);
   }
   return {
     name: "web",

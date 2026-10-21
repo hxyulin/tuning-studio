@@ -1,7 +1,9 @@
 // A studio-server child process and its stdio protocol (spec in crates/studio-server/src/protocol.rs).
 // No `vscode` import, so the smoke script can drive a server from plain Node.
 
-import { ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
+import { Deferred, Effect } from "effect";
+import { type CallError, Disconnected, PendingCalls, runCall } from "../../src/host/rpc";
 
 const KIND_JSON = 0x4a; // 'J'
 const KIND_FRAME = 0x46; // 'F'
@@ -26,23 +28,21 @@ export interface ServerHandlers {
   log(line: string): void;
 }
 
-export class ServerError extends Error {}
-
 export class StudioServer {
+  /** The server's `ready` message; fails with `Disconnected` if it exits first */
+  readonly started = Deferred.makeUnsafe<Ready, Disconnected>();
   readonly ready: Promise<Ready>;
   private readonly child: ChildProcess;
-  private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
-  private nextId = 1;
+  private readonly pending = new PendingCalls();
   private input: Buffer = Buffer.alloc(0);
   private closing = false;
   private exited = false;
-  private readyWaiter!: { resolve: (r: Ready) => void; reject: (e: Error) => void };
 
   private readonly handlers: ServerHandlers;
 
   constructor(path: string, args: string[], handlers: ServerHandlers) {
     this.handlers = handlers;
-    this.ready = new Promise((resolve, reject) => (this.readyWaiter = { resolve, reject }));
+    this.ready = runCall(Deferred.await(this.started));
     this.ready.catch(() => {}); // a server that never starts also shows up as `exit`
     this.child = spawn(path, args, { stdio: ["pipe", "pipe", "pipe"] });
     this.child.stdout!.on("data", (chunk: Buffer) => this.receive(chunk));
@@ -60,18 +60,19 @@ export class StudioServer {
     return !this.exited;
   }
 
-  /** Call a method (the Tauri command names); rejects with the server's error message */
-  call<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
-    if (this.exited) return Promise.reject(new ServerError("studio-server is not running"));
-    const id = this.nextId++;
-    const body = Buffer.from(JSON.stringify({ id, method, params }), "utf8");
-    const header = Buffer.alloc(5);
-    header.writeUInt32LE(body.length + 1, 0);
-    header[4] = KIND_JSON;
-    return new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
+  /** Call a method (the Tauri command names); fails with the server's error, `Disconnected` or `TimedOut` */
+  callEffect<T = unknown>(method: string, params: Record<string, unknown> = {}): Effect.Effect<T, CallError> {
+    return this.pending.call<T>(method, (id) => {
+      const body = Buffer.from(JSON.stringify({ id, method, params }), "utf8");
+      const header = Buffer.alloc(5);
+      header.writeUInt32LE(body.length + 1, 0);
+      header[4] = KIND_JSON;
       this.child.stdin!.write(Buffer.concat([header, body]));
     });
+  }
+
+  call<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+    return runCall(this.callEffect<T>(method, params));
   }
 
   /** Close stdin, so the server stops its session and lets go of the probe, then exits */
@@ -79,16 +80,16 @@ export class StudioServer {
     if (this.exited) return Promise.resolve();
     this.closing = true;
     this.child.stdin!.end();
-    return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        this.child.kill();
-        resolve();
-      }, EXIT_GRACE_MS);
-      this.child.once("close", () => {
-        clearTimeout(timer);
-        resolve();
-      });
+    const closed = Effect.callback<void>((resume) => {
+      const done = () => resume(Effect.void);
+      this.child.once("close", done);
+      return Effect.sync(() => this.child.off("close", done));
     });
+    const graceful = Effect.timeoutOrElse(closed, {
+      duration: EXIT_GRACE_MS,
+      orElse: () => Effect.sync(() => void this.child.kill()),
+    });
+    return Effect.runPromise(graceful);
   }
 
   private receive(chunk: Buffer) {
@@ -120,27 +121,23 @@ export class StudioServer {
     if (body[0] !== KIND_JSON) throw new Error(`unknown kind ${body[0]}`);
     const m = JSON.parse(body.subarray(1).toString("utf8"));
     if (m.type === "response") {
-      const call = this.pending.get(m.id);
-      if (!call) return;
-      this.pending.delete(m.id);
-      if (m.ok) call.resolve(m.result);
-      else call.reject(new ServerError(m.error));
+      if (m.ok) this.pending.succeed(m.id, m.result);
+      else this.pending.fail(m.id, m.error);
     } else if (m.type === "event") {
       this.handlers.event(m.session, m.event);
     } else if (m.type === "app_event") {
       this.handlers.appEvent?.(m.event);
     } else if (m.type === "ready") {
-      this.readyWaiter.resolve({ version: m.version, mock: m.mock });
+      Deferred.doneUnsafe(this.started, Effect.succeed({ version: m.version, mock: m.mock }));
     }
   }
 
   private finish(code: number | null, error: string | null) {
     if (this.exited) return;
     this.exited = true;
-    const why = new ServerError(error ?? `studio-server exited (code ${code})`);
-    this.readyWaiter.reject(why);
-    for (const call of this.pending.values()) call.reject(why);
-    this.pending.clear();
+    const why = error ?? `studio-server exited (code ${code})`;
+    Deferred.doneUnsafe(this.started, Effect.fail(new Disconnected({ message: why })));
+    this.pending.disconnect(why);
     if (error) this.handlers.log(`studio-server: ${error}`);
     this.handlers.exit(code, this.closing);
   }

@@ -7,6 +7,9 @@
 - The VS Code extension requires VS Code 1.140 or later, matching its `@types/vscode`.
 - TypeScript builds use `verbatimModuleSyntax` and `erasableSyntaxOnly`; frontend tests and the
   VS Code extension are type-checked in CI. Both packages also check cleanly with tsrs.
+- Backend calls run as Effect programs with typed failures (`HostError`, `Disconnected`,
+  `TimedOut`) in every host and the VS Code extension. Calls other than dialogs and CSV export
+  give up after 60 s, and failures read without an `Error:` prefix.
 
 ## 0.1.2 — 2026-10-21
 
