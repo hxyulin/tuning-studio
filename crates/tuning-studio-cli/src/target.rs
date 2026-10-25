@@ -1,10 +1,11 @@
 //! SWD access to core 0's memory through its MEM-AP, so reads and writes never halt
-//! the core. An aligned 1, 2 or 4-byte value moves in one bus transfer of its width,
+//! the core. The session sits behind a `FairMutex` so the GDB server can share it. An aligned 1, 2 or 4-byte value moves in one bus transfer of its width,
 //! so the core never sees half of a write, which keeps atomics atomic. 8-byte values
 //! take two 32-bit transfers. Attaching and detaching each halt it for about 20 ms while probe-rs
 //! clears breakpoints.
 
 use anyhow::{Context, Result, anyhow, bail};
+use parking_lot::FairMutex;
 use probe_rs::architecture::arm::dp::DpAddress;
 use probe_rs::architecture::arm::memory::ArmMemoryInterface;
 use probe_rs::architecture::arm::{ApV2Address, FullyQualifiedApAddress};
@@ -17,8 +18,10 @@ use std::ops::Range;
 use crate::memory::Memory;
 
 pub struct Target {
-    session: Session,
+    pub session: FairMutex<Session>,
     ap: FullyQualifiedApAddress,
+    /// Flash, where a bus write has no effect
+    nvm: Vec<Range<u64>>,
 }
 
 impl Target {
@@ -42,25 +45,29 @@ impl Target {
             .attach(chip, Permissions::default())
             .with_context(|| format!("could not attach to {chip}"))?;
         let ap = core_memory_ap(&session)?;
-        Ok(Self { session, ap })
-    }
-
-    pub fn memory(&mut self) -> Result<ApMemory<'_>> {
-        let nvm = self
-            .session
+        let nvm = session
             .target()
             .memory_map
             .iter()
             .filter(|region| matches!(region, MemoryRegion::Nvm(_)))
             .map(|region| region.address_range())
             .collect();
-        let interface = self.session.get_arm_interface()?;
-        let ap = interface
+        Ok(Self {
+            session: FairMutex::new(session),
+            ap,
+            nvm,
+        })
+    }
+
+    /// Memory access through `session`, which must be this target's locked session.
+    pub fn memory<'s>(&self, session: &'s mut Session) -> Result<ApMemory<'s>> {
+        let ap = session
+            .get_arm_interface()?
             .memory_interface(&self.ap)
             .context("could not open the memory AP")?;
         Ok(ApMemory {
             ap,
-            nvm,
+            nvm: self.nvm.clone(),
             snapshot: None,
         })
     }

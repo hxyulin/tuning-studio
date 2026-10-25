@@ -1,11 +1,19 @@
+mod debug;
+mod gdb;
 mod memory;
 mod path;
+mod session;
 mod target;
 mod value;
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand};
+use std::io::{IsTerminal, Write};
+use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 use studio_dwarf::tree::{self, NodeKind};
 use studio_dwarf::{ElfInfo, ElfParser, Step};
 
@@ -25,14 +33,29 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Read a variable or an address once
+    /// Read variables or addresses once
     Read {
         #[command(flatten)]
         target: TargetArgs,
-        /// Symbol path, such as `CONTROL.yaw.target_rpm` or `buffer[3]`, or an address
+        /// Symbol paths, such as `CONTROL.yaw.target_rpm` or `buffer[3]`, or addresses
         /// with an optional type and path, such as `0x24000070`, `0x24000070:f32` or
         /// `0x20000038:Axis.gains.2`. Types other than the primitives need `--elf`.
-        location: String,
+        #[arg(required = true)]
+        locations: Vec<String>,
+    },
+    /// Read variables or addresses repeatedly until Ctrl-C
+    Watch {
+        #[command(flatten)]
+        target: TargetArgs,
+        /// Symbol paths or addresses, as for `read`
+        #[arg(required = true)]
+        locations: Vec<String>,
+        /// Time between reads in milliseconds
+        #[arg(long, default_value_t = 100)]
+        interval: u64,
+        /// Stop after this many reads
+        #[arg(long)]
+        count: Option<u64>,
     },
     /// Write one value, then read it back
     Set {
@@ -42,6 +65,15 @@ enum Command {
         location: String,
         #[arg(allow_negative_numbers = true)]
         value: String,
+    },
+    /// Attach once and run commands from stdin, one per line: read, watch, set,
+    /// halt, resume, step, break and more. `help` lists them.
+    Session {
+        #[command(flatten)]
+        target: TargetArgs,
+        /// Also serve GDB on this address; `--gdb` alone uses 127.0.0.1:1337
+        #[arg(long, num_args = 0..=1, default_missing_value = "127.0.0.1:1337")]
+        gdb: Option<SocketAddr>,
     },
 }
 
@@ -62,6 +94,10 @@ struct TargetArgs {
 }
 
 impl TargetArgs {
+    fn attach(&self) -> Result<target::Target> {
+        target::Target::attach(&self.chip, self.probe.as_deref(), self.speed)
+    }
+
     fn elf(&self) -> Result<Option<ElfInfo>> {
         self.elf
             .as_ref()
@@ -75,13 +111,32 @@ impl TargetArgs {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
-        Command::Read { target, location } => {
+        Command::Read { target, locations } => {
             let elf = target.elf()?;
-            let mut probe =
-                target::Target::attach(&target.chip, target.probe.as_deref(), target.speed)?;
-            let mut memory = probe.memory()?;
-            let location = path::locate(elf.as_ref(), &mut memory, &location)?;
-            print!("{}", read(elf.as_ref(), &mut memory, &location)?);
+            let probe = target.attach()?;
+            let mut session = probe.session.lock();
+            let mut memory = probe.memory(&mut session)?;
+            for location in &locations {
+                let location = path::locate(elf.as_ref(), &mut memory, location)?;
+                print!("{}", read(elf.as_ref(), &mut memory, &location)?);
+            }
+        }
+        Command::Watch {
+            target,
+            locations,
+            interval,
+            count,
+        } => {
+            let elf = target.elf()?;
+            let probe = target.attach()?;
+            let mut session = probe.session.lock();
+            let mut memory = probe.memory(&mut session)?;
+            let locations = locations
+                .iter()
+                .map(|location| path::locate(elf.as_ref(), &mut memory, location))
+                .collect::<Result<Vec<_>>>()?;
+            let interval = Duration::from_millis(interval.max(1));
+            watch(elf.as_ref(), &mut memory, &locations, interval, count)?;
         }
         Command::Set {
             target,
@@ -89,15 +144,88 @@ fn main() -> Result<()> {
             value,
         } => {
             let elf = target.elf()?;
-            let mut probe =
-                target::Target::attach(&target.chip, target.probe.as_deref(), target.speed)?;
-            let mut memory = probe.memory()?;
+            let probe = target.attach()?;
+            let mut session = probe.session.lock();
+            let mut memory = probe.memory(&mut session)?;
             let location = path::locate(elf.as_ref(), &mut memory, &location)?;
             set(elf.as_ref(), &mut memory, &location, &value)?;
             print!("{}", read(elf.as_ref(), &mut memory, &location)?);
         }
+        Command::Session { target, gdb } => {
+            let elf = target.elf()?;
+            let probe = target.attach()?;
+            session::run(&probe, elf.as_ref(), gdb)?;
+        }
     }
     Ok(())
+}
+
+/// Print every location each `interval`, until Ctrl-C or `count` reads. A terminal
+/// shows the latest read in place; other output gets every read after a time line.
+/// The probe detaches normally on Ctrl-C.
+fn watch(
+    elf: Option<&ElfInfo>,
+    memory: &mut dyn Memory,
+    locations: &[Location],
+    interval: Duration,
+    count: Option<u64>,
+) -> Result<()> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let handler = Arc::clone(&stop);
+    ctrlc::set_handler(move || handler.store(true, Ordering::Relaxed))?;
+    let terminal = std::io::stdout().is_terminal();
+    let start = Instant::now();
+    let mut next = start;
+    let mut reads = 0;
+    while !stop.load(Ordering::Relaxed) && count.is_none_or(|count| reads < count) {
+        let elapsed = start.elapsed().as_secs_f64();
+        let mut text = String::new();
+        for location in locations {
+            let location = refresh(elf, memory, location)?;
+            text += &read(elf, memory, &location)?;
+        }
+        let mut out = std::io::stdout().lock();
+        if terminal {
+            // Home the cursor and clear the screen, as watch(1) does.
+            write!(out, "\x1b[H\x1b[2J")?;
+            writeln!(
+                out,
+                "{elapsed:.1} s, every {} ms; Ctrl-C stops",
+                interval.as_millis()
+            )?;
+        } else {
+            writeln!(out, "--- {elapsed:.3} s")?;
+        }
+        out.write_all(text.as_bytes())?;
+        out.flush()?;
+        drop(out);
+        reads += 1;
+        // Keep to the schedule; after a slow read, skip the reads it overran.
+        next += interval;
+        let now = Instant::now();
+        if next < now {
+            next += interval * ((now - next).as_nanos() / interval.as_nanos()) as u32 + interval;
+        }
+        while !stop.load(Ordering::Relaxed) && Instant::now() < next {
+            std::thread::sleep((next - Instant::now()).min(Duration::from_millis(20)));
+        }
+    }
+    Ok(())
+}
+
+/// Resolve a location again, so paths through pointers follow their current targets.
+fn refresh(
+    elf: Option<&ElfInfo>,
+    memory: &mut dyn Memory,
+    location: &Location,
+) -> Result<Location> {
+    Ok(match (location, elf) {
+        (Location::Node(node), Some(elf)) => {
+            Location::Node(Box::new(path::describe(elf, memory, &node.node)?))
+        }
+        (&Location::Raw { address, scalar }, _) => Location::Raw { address, scalar },
+        (Location::Node(_), None) => unreachable!("symbol paths need an ELF"),
+    })
 }
 
 fn read(elf: Option<&ElfInfo>, memory: &mut dyn Memory, location: &Location) -> Result<String> {
