@@ -4,8 +4,8 @@ The public package names are `tuning-studio` (desktop), `tuning-studio-api`
 (allocation-free firmware API), and `tuning-studio-trace` (optional task event
 recorder). Supporting host crates use the `tuning-studio-` prefix as well.
 Names were checked on crates.io on 2026-09-22; availability is not a reservation.
-The current release candidate is 0.1.2. Review its
-[release notes](release-notes/0.1.2.md); the historical
+The current release candidate is 0.1.3. Review its
+[release notes](release-notes/0.1.3.md); the historical
 [0.1.0 checklist](release-checklist.md) records initial packaging work.
 
 ## Firmware integration
@@ -90,7 +90,7 @@ Local checks:
 
 ```sh
 npm ci && npm run build
-python3 scripts/release.py validate --version 0.1.2
+python3 scripts/release.py validate --version 0.1.3
 cargo test --workspace --locked
 cargo package -p tuning-studio-api
 cargo package -p tuning-studio-trace

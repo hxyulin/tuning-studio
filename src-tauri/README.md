@@ -68,4 +68,4 @@ library for Tauri wiring; reusable integrations should depend on
 
 MIT licensed.
 
-Release 0.1.2: see the [release notes](https://github.com/hxyulin/tuning-tools/blob/main/docs/release-notes/0.1.2.md).
+Release 0.1.3: see the [release notes](https://github.com/hxyulin/tuning-tools/blob/main/docs/release-notes/0.1.3.md).

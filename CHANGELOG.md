@@ -1,7 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.1.3
 
+- The VS Code panel is rebuilt in Preact: Live Watch on the left, the plot on the right.
+  A Tasks group lists each Embassy task and the locals of its current suspend state.
+- Live Watch hides vtables, metadata sections, RTT buffers and zero-sized statics, and lists
+  each member name once.
+- Types first referenced by global offset resolve under LTO instead of staying placeholders.
+- The plot's y-axis fits its widest label, and large values keep distinct tick labels.
+- Connect and session failures appear in the Output channel.
 - Dependencies at their latest versions, including gimli 0.34, object 0.40, mcap 0.26,
   libloading 0.9, cpp_demangle 0.5, TypeScript 7 and esbuild 0.28.
 - The VS Code extension requires VS Code 1.140 or later, matching its `@types/vscode`.

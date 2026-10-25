@@ -82,7 +82,7 @@ including batched TTS1 sample frames. Queues stay bounded and a stalled writer t
 normal stdio protocol is unchanged. The browser service is loopback-only; it has no LAN mode.
 
 Release assets include `studio-server-VERSION-TARGET.tar.zst` with embedded frontend assets,
-README and license, plus its `.sha256`. The 0.1.2 candidate must be published before consumers
+README and license, plus its `.sha256`. The 0.1.3 candidate must be published before consumers
 can fetch it. There has been no hardware verification of flash/reset in this change; mock tests
 cover HTTP, authentication, ELF loading and repeated session connections.
 
@@ -121,4 +121,4 @@ connections, inspection, recording and streaming through stdin/stdout.
 
 Part of [Tuning Studio](https://github.com/hxyulin/tuning-tools). MIT licensed.
 
-Release 0.1.2: see the [release notes](https://github.com/hxyulin/tuning-tools/blob/main/docs/release-notes/0.1.2.md).
+Release 0.1.3: see the [release notes](https://github.com/hxyulin/tuning-tools/blob/main/docs/release-notes/0.1.3.md).

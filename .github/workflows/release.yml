@@ -6,7 +6,7 @@ on:
       version:
         description: Version already committed in all Cargo manifests and tauri.conf.json
         required: true
-        default: '0.1.2'
+        default: '0.1.3'
       create_release:
         description: Create a draft GitHub release after all builds pass
         type: boolean

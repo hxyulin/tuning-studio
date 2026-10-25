@@ -11,7 +11,7 @@ For a published release:
 
 ```toml
 [dependencies]
-tuning-studio-app = "0.1.2"
+tuning-studio-app = "0.1.3"
 ```
 
 The Rust library name is **`studio_app`**. Browsing an ELF needs no hardware:

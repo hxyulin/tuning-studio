@@ -15,7 +15,7 @@ For a published release:
 
 ```toml
 [dependencies]
-tuning-studio-api = "0.1.2"
+tuning-studio-api = "0.1.3"
 ```
 
 For unreleased development, use a path to `crates/tuning-studio-api` in a local checkout,

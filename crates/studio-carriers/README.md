@@ -10,7 +10,7 @@ For a published release:
 
 ```toml
 [dependencies]
-tuning-studio-carriers = "0.1.2"
+tuning-studio-carriers = "0.1.3"
 ```
 
 The Rust library name is **`studio_carriers`**. A mock target needs no hardware:

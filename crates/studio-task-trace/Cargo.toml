@@ -1,6 +1,6 @@
 [package]
 name = "tuning-studio-trace"
-version = "0.1.2"
+version = "0.1.3"
 description = "Bounded no_std task event tracing for live SWD inspection"
 edition.workspace = true
 license.workspace = true
