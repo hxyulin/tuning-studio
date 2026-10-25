@@ -320,6 +320,7 @@ export class StudioSession implements ProbeHolder {
     try {
       return await this.serverCall("session_connect", params);
     } catch (e) {
+      this.log.appendLine(`connect failed: ${e instanceof Error ? e.message : e}`);
       if (this.session?.id === params.session) this.session.live = false;
       this.state = "failed";
       this.changed();
@@ -354,6 +355,7 @@ export class StudioSession implements ProbeHolder {
           this.snapshots.set(typed.type, typed);
         }
         if (typed.type === "status") {
+          if (typed.state === "failed") this.log.appendLine(`session failed: ${typed.message ?? "no reason given"}`);
           this.session.live = typed.state === "connecting" || typed.state === "connected";
           this.state = typed.state;
           this.changed();
