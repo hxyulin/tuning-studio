@@ -603,6 +603,26 @@ impl TypeTable {
         self.dwarf_to_id.entry(key).or_insert(id);
     }
 
+    /// Give a still-empty `id` the definition of `from`. A reference by global
+    /// offset allocates a type before the DIE it names is parsed under its
+    /// unit-local key, and the alias registered then keeps the empty one.
+    pub fn fill_placeholder(&mut self, id: TypeId, from: TypeId) {
+        if id == from || !matches!(self.get(id), Some(TypeDef::Placeholder)) {
+            return;
+        }
+        let def = self.types[from.0 as usize].clone();
+        if def.is_forward_decl() {
+            self.pending_forward_decls.push(id);
+        }
+        self.types[id.0 as usize] = def;
+        if self.rust_types.contains(&from) {
+            self.rust_types.insert(id);
+        }
+        if let Some(name) = self.source_names.get(&from).cloned() {
+            self.source_names.insert(id, name);
+        }
+    }
+
     /// Define a type at the given TypeId
     pub fn define(&mut self, id: TypeId, def: TypeDef) {
         assert!(
@@ -1274,6 +1294,30 @@ mod tests {
         assert!(!PrimitiveDef::UnsignedInt.is_signed());
         assert!(PrimitiveDef::Float.is_float());
         assert!(!PrimitiveDef::Int.is_float());
+    }
+
+    /// A member's `DW_FORM_ref_addr` to a `u16` declared later in the unit, as
+    /// rustc emits with LTO: the definition reaches both keys.
+    #[test]
+    fn global_reference_before_its_type_is_filled() {
+        let mut table = TypeTable::new();
+        let global = GlobalTypeKey::global(0xdfe1).to_dwarf_key();
+        let early = table.get_or_allocate(global);
+
+        let local = DwarfTypeKey::new(0, 0xdfe1);
+        let id = table.insert_for_key(local, TypeDef::Primitive(PrimitiveDef::UnsignedShort));
+        table.mark_rust(id);
+        table.set_source_name(id, "u16".into());
+        table.register_alias(global, id);
+        table.fill_placeholder(early, id);
+
+        assert!(matches!(
+            table.get(early),
+            Some(TypeDef::Primitive(PrimitiveDef::UnsignedShort))
+        ));
+        assert_eq!(table.type_name(early), table.type_name(id));
+        assert!(table.is_rust(early));
+        assert_eq!(table.stats().placeholders, 0);
     }
 
     #[test]

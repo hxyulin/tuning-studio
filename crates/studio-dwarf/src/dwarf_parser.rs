@@ -457,6 +457,14 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
             }
         }
 
+        // A reference by global offset may have reached this DIE first
+        if let (Some(id), Some(offset)) = (self.type_table.get_by_dwarf_key(key), global_offset) {
+            let global = GlobalTypeKey::global(offset).to_dwarf_key();
+            if let Some(alias) = self.type_table.get_by_dwarf_key(global) {
+                self.type_table.fill_placeholder(alias, id);
+            }
+        }
+
         Ok(())
     }
 
