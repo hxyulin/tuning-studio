@@ -1,0 +1,18 @@
+[package]
+name = "tuning-studio-api"
+description = "Values a host can read and parameters it can tune safely, for Tuning Studio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+authors.workspace = true
+keywords = ["embedded", "no-std", "debugging", "tuning"]
+categories = ["embedded", "no-std"]
+
+[dependencies]
+critical-section = "1.2"
+
+[dev-dependencies]
+critical-section = { version = "1.2", features = ["std"] }

@@ -1,0 +1,21 @@
+[package]
+name = "tune-lab"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+
+# Standalone firmware, not part of the host workspace.
+[workspace]
+
+[dependencies]
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7"
+tuning-studio-api = { path = "../../crates/tuning-studio-api" }
+
+[profile.release]
+debug = 2
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"

@@ -129,9 +129,19 @@ pub fn render(elf: &ElfInfo, memory: &mut dyn Memory, node: &SymbolNode) -> Resu
     if let Some(size) = node.size.filter(|&size| size > 0 && size <= SNAPSHOT_LIMIT) {
         memory.snapshot(node.address, size as usize)?;
     }
+    Ok(render_snapshot(elf, memory, node, &node.path))
+}
+
+/// As [`render`], under `label`, from bytes the caller has already snapshotted.
+pub fn render_snapshot(
+    elf: &ElfInfo,
+    memory: &mut dyn Memory,
+    node: &SymbolNode,
+    label: &str,
+) -> String {
     let mut out = String::new();
-    render_node(elf, memory, node, &node.path, 0, &mut out);
-    Ok(out)
+    render_node(elf, memory, node, label, 0, &mut out);
+    out
 }
 
 fn render_node(

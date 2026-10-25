@@ -80,7 +80,10 @@ enum SessionCommand {
     },
     /// Stop the watches with these numbers, or all of them
     Unwatch { ids: Vec<u32> },
-    /// Write one value, then read it back
+    /// Print every `Param` and `watch!` value
+    Values,
+    /// Write one value, then read it back. A `Param` changes through the
+    /// firmware, which applies its range and step.
     Set {
         location: String,
         #[arg(allow_negative_numbers = true)]
@@ -526,8 +529,12 @@ fn handle(
         SessionCommand::Set { location, value } => {
             let mut memory = target.memory(&mut session)?;
             let location = path::locate(elf, &mut memory, &location)?;
-            crate::set(elf, &mut memory, &location, &value)?;
+            *out += &crate::set(elf, &mut memory, &location, &value)?;
             *out += &crate::read(elf, &mut memory, &location)?;
+        }
+        SessionCommand::Values => {
+            let elf = elf.ok_or_else(|| anyhow!("the session has no ELF"))?;
+            *out += &crate::api::values(elf, &mut target.memory(&mut session)?)?;
         }
         SessionCommand::Halt => {
             debug::halt(&mut session)?;

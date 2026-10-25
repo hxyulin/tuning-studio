@@ -1,3 +1,4 @@
+mod api;
 mod daemon;
 mod debug;
 mod flash;
@@ -85,7 +86,14 @@ enum Command {
         #[arg(long)]
         count: Option<u64>,
     },
-    /// Write one value, then read it back
+    /// Print every `Param` and `watch!` value the firmware declares with
+    /// tuning-studio-api
+    Values {
+        #[command(flatten)]
+        target: TargetArgs,
+    },
+    /// Write one value, then read it back. A `Param` changes through the
+    /// firmware, which applies its range and step.
     Set {
         #[command(flatten)]
         target: TargetArgs,
@@ -304,6 +312,15 @@ fn main() -> Result<()> {
             let interval = Duration::from_millis(interval.max(1));
             watch(elf.as_ref(), &mut memory, &locations, interval, count)?;
         }
+        Command::Values { target } => {
+            if let Some(session) = target.probe.session()? {
+                return daemon::request(session, words("values", []));
+            }
+            let (probe, elf) = target.attach()?;
+            let elf = elf.ok_or_else(|| anyhow!("pass --elf to find the values"))?;
+            let mut session = probe.session.lock();
+            print!("{}", api::values(&elf, &mut probe.memory(&mut session)?)?);
+        }
         Command::Set {
             target,
             location,
@@ -316,7 +333,7 @@ fn main() -> Result<()> {
             let mut session = probe.session.lock();
             let mut memory = probe.memory(&mut session)?;
             let location = path::locate(elf.as_ref(), &mut memory, &location)?;
-            set(elf.as_ref(), &mut memory, &location, &value)?;
+            print!("{}", set(elf.as_ref(), &mut memory, &location, &value)?);
             print!("{}", read(elf.as_ref(), &mut memory, &location)?);
         }
         Command::Halt { target } => run_control(&target, "halt", debug::halt)?,
@@ -490,7 +507,11 @@ fn refresh(
 
 fn read(elf: Option<&ElfInfo>, memory: &mut dyn Memory, location: &Location) -> Result<String> {
     match (location, elf) {
-        (Location::Node(node), Some(elf)) => value::render(elf, memory, node),
+        (Location::Node(node), Some(elf)) => match api::kind(node) {
+            Some(api::Kind::Watch) => api::render_watch(elf, memory, node),
+            Some(api::Kind::Param) => api::render_param(elf, memory, node),
+            None => value::render(elf, memory, node),
+        },
         (&Location::Raw { address, scalar }, _) => {
             let bytes = memory.read(address, value::size_of(scalar))?;
             Ok(format!(
@@ -502,12 +523,35 @@ fn read(elf: Option<&ElfInfo>, memory: &mut dyn Memory, location: &Location) -> 
     }
 }
 
+/// Write `text` to `location`, and return any notes about the result.
 fn set(
     elf: Option<&ElfInfo>,
     memory: &mut dyn Memory,
     location: &Location,
     text: &str,
-) -> Result<()> {
+) -> Result<String> {
+    if let (Location::Node(node), Some(elf)) = (location, elf) {
+        match api::kind(node) {
+            Some(api::Kind::Param) => return api::request(elf, memory, node, text),
+            Some(api::Kind::Watch) => bail!(
+                "{} is a `watch!` value, which only the firmware writes",
+                node.path
+            ),
+            None => {}
+        }
+        if let Some((kind, owner)) = api::owner(elf, memory, node)? {
+            bail!(
+                "{} is inside {}; {}",
+                node.path,
+                owner.path,
+                match kind {
+                    api::Kind::Param =>
+                        format!("set {} itself, so the firmware applies it", owner.path),
+                    api::Kind::Watch => "only the firmware writes a `watch!` value".into(),
+                }
+            );
+        }
+    }
     let (address, bytes) = match location {
         &Location::Raw { address, scalar } => (address, value::encode(scalar, text)?),
         Location::Node(node) => {
@@ -560,12 +604,13 @@ fn set(
     };
     memory.write(address, &bytes)?;
     if memory.read(address, bytes.len())? != bytes {
-        eprintln!(
-            "warning: the value read back differs from the value written. The firmware may \
-             have changed it since, or this memory ignores writes."
+        return Ok(
+            "warning: the value read back differs from the value written. The firmware \
+                   may have changed it since, or this memory ignores writes.\n"
+                .into(),
         );
     }
-    Ok(())
+    Ok(String::new())
 }
 
 #[cfg(test)]
@@ -621,6 +666,30 @@ mod tests {
         ] {
             let location = path::locate(Some(&elf), &mut memory, location).unwrap();
             assert!(set(Some(&elf), &mut memory, &location, value).is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod api_tests {
+    use super::*;
+    use memory::Fake;
+
+    #[test]
+    fn refuses_writes_around_the_firmware() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tune_lab.elf");
+        let elf = ElfParser::parse(path).unwrap();
+        let mut memory = Fake::from_elf(path);
+        for (location, expected) in [
+            ("motor.speed", "only the firmware writes"),
+            ("tune_lab::KP.value", "set tune_lab::KP itself"),
+            ("tune_lab::KP.max", "set tune_lab::KP itself"),
+        ] {
+            let location = path::locate(Some(&elf), &mut memory, location).unwrap();
+            let error = set(Some(&elf), &mut memory, &location, "1")
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(expected), "{error}");
         }
     }
 }

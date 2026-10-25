@@ -101,8 +101,13 @@ pub fn step(session: &mut Session) -> Result<()> {
     Ok(())
 }
 
+/// The core's status. A core waiting in `wfi` counts as running: firmware that
+/// sleeps between interrupts would otherwise switch status on nearly every poll.
 pub fn status(session: &mut Session) -> Result<CoreStatus> {
-    Ok(session.core(0)?.status()?)
+    Ok(match session.core(0)?.status()? {
+        CoreStatus::Sleeping => CoreStatus::Running,
+        status => status,
+    })
 }
 
 /// One line for a core status, such as `halted at 0x08000512 (main + 0x12), breakpoint 1`.
@@ -113,8 +118,7 @@ pub fn describe_status(
     status: CoreStatus,
 ) -> Result<String> {
     let reason = match status {
-        CoreStatus::Running => return Ok("running".into()),
-        CoreStatus::Sleeping => return Ok("sleeping".into()),
+        CoreStatus::Running | CoreStatus::Sleeping => return Ok("running".into()),
         CoreStatus::LockedUp => return Ok("locked up".into()),
         CoreStatus::Unknown => return Ok("status unknown".into()),
         CoreStatus::Halted(reason) => reason,
