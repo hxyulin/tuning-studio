@@ -248,10 +248,13 @@ pub fn roots(elf: &ElfInfo) -> Vec<RootNode> {
             }
             node.readable = sym.is_readable();
             node.status = sym.unreadable_reason().map(str::to_string);
+            // Zero-sized statics, such as cortex-m's `CORE_PERIPHERALS: ()`, hold nothing to show
+            let internal = node.size == Some(0)
+                || is_internal(&sym.demangled_name, &sym.section, &table.type_name(type_id));
             Some(RootNode {
                 segments: split_path(&sym.demangled_name),
                 read_only: !sym.writable,
-                internal: is_internal(&sym.demangled_name, &sym.section, &table.type_name(type_id)),
+                internal,
                 section: sym.section.clone(),
                 node,
             })
