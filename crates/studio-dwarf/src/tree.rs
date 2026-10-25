@@ -787,12 +787,19 @@ const RUNTIME_CRATES: [&str; 6] = [
     "static_cell",
 ];
 
-/// Task storage, cells handing out buffers once, RTT, and runtime crates' own
-/// statics. Judged by the outer type name, before wrappers are shown through.
+/// Sections holding linker and tooling metadata rather than program state.
+const METADATA_SECTIONS: [&str; 4] = [".rtt", ".defmt", ".embedded_test", ".vector_table"];
+
+/// Task storage, cells handing out buffers once, RTT, trait vtables, metadata
+/// sections, and runtime crates' own statics. Judged by the outer type name,
+/// before wrappers are shown through.
 fn is_internal(path: &str, section: &str, type_name: &str) -> bool {
     let krate = path.trim_start_matches('<');
-    section == ".rtt"
+    METADATA_SECTIONS.contains(&section)
         || path == "_SEGGER_RTT"
+        || path.ends_with("::_RTT_CHANNEL_BUFFER")
+        || path.ends_with("::{vtable}")
+        || path.starts_with("_EMBASSY_")
         || type_name.starts_with("TaskPoolHolder<")
         || type_name.starts_with("StaticCell<")
         || RUNTIME_CRATES.iter().any(|c| krate.starts_with(c))
@@ -1216,6 +1223,33 @@ mod tests {
             ".rtt",
             "MaybeUninit<[u8; 512]>"
         ));
+        assert!(is_internal(
+            "board::setup::_RTT_CHANNEL_BUFFER",
+            ".bss",
+            "[u8; 1024]"
+        ));
+        assert!(is_internal(
+            "<&str as core::fmt::Debug>::{vtable}",
+            ".rodata",
+            "<&str as core::fmt::Debug>::{vtable_type}"
+        ));
+        assert!(is_internal("_defmt_version_ = 4", ".defmt", "u8"));
+        assert!(is_internal(
+            "EMBEDDED_TEST_VERSION",
+            ".embedded_test",
+            "usize"
+        ));
+        assert!(is_internal(
+            "__INTERRUPTS",
+            ".vector_table",
+            "[Vector; 163]"
+        ));
+        assert!(is_internal("_EMBASSY_DEVICE_PERIPHERALS", ".bss", "bool"));
+        assert!(!is_internal(
+            "<devices::bmi088::Bmi088<_, _>>::read::SITE",
+            ".bss",
+            "u32"
+        ));
         assert!(is_internal("embassy_stm32::dma::STATE", ".bss", "State"));
         assert!(is_internal(
             "<embassy_stm32::_generated::peripherals::UART5 as embassy_stm32::usart::SealedInstance>::state::STATE",
@@ -1234,7 +1268,12 @@ mod tests {
         ));
 
         let elf = rust();
-        assert!(roots(&elf).iter().all(|r| !r.internal));
+        let internal: Vec<_> = roots(&elf)
+            .into_iter()
+            .filter(|r| r.internal)
+            .map(|r| r.node.path)
+            .collect();
+        assert_eq!(internal, ["rust_fixture::RESET_VECTOR"]);
     }
 
     #[test]
