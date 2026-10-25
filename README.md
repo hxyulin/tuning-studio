@@ -38,7 +38,7 @@ tune_lab::SETPOINT: f32 = 104.0 rad/s (target 120.0, default 100.0, -300.0 to 30
 
 | Task | Tuning Studio provides |
 | --- | --- |
-| Inspect state | `read` and `watch` on symbol paths such as `CONTROL.yaw.gains[2]`, or on raw addresses with a type |
+| Inspect state | `read` and `watch` on symbol paths such as `CONTROL.yaw.gains[2]`, or on raw addresses with a type, and `trace`, which records every write to a value |
 | Tune a controller | `Param`s with a range and a step per tick, changed with `set`, which waits for the firmware's reply |
 | Watch async code | `watch!` values that are never torn, and `tasks`, which profiles each Embassy task |
 | Run firmware | `run` as a Cargo runner: flash, reset, then print RTT and defmt logs |

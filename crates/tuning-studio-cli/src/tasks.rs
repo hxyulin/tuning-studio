@@ -215,13 +215,13 @@ fn enable_pc_sampling(memory: &mut dyn Memory) -> bool {
 }
 
 /// Functions by address, to name the one a sampled PC is in
-struct Functions {
+pub struct Functions {
     /// (start, end, name), sorted by start
     ranges: Vec<(u64, u64, String)>,
 }
 
 impl Functions {
-    fn new(elf: &ElfInfo) -> Self {
+    pub fn new(elf: &ElfInfo) -> Self {
         let mut ranges: Vec<_> = elf
             .get_functions()
             .into_iter()
@@ -242,7 +242,7 @@ impl Functions {
             .map(|&(start, end, _)| (start, end))
     }
 
-    fn name_at(&self, pc: u64) -> Option<&str> {
+    pub fn name_at(&self, pc: u64) -> Option<&str> {
         let i = self.ranges.partition_point(|&(start, _, _)| start <= pc);
         let (_, end, name) = self.ranges.get(i.checked_sub(1)?)?;
         (pc < *end).then_some(name.as_str())
@@ -251,7 +251,7 @@ impl Functions {
 
 /// `<embassy_executor::platform::thread::Executor>::run::<…>` as `Executor::run`:
 /// without generic arguments, and only the last type or module and the function.
-fn short_name(name: &str) -> String {
+pub fn short_name(name: &str) -> String {
     let mut plain = String::new();
     let mut depth = 0usize;
     let mut chars = name.chars().peekable();

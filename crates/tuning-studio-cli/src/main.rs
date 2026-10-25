@@ -9,6 +9,7 @@ mod path;
 mod session;
 mod target;
 mod tasks;
+mod trace;
 mod value;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -94,6 +95,19 @@ enum Command {
         #[command(flatten)]
         target: TargetArgs,
         /// How long to sample, in milliseconds
+        #[arg(long, default_value_t = 1000)]
+        duration: u64,
+    },
+    /// Record every write to up to four values with the DWT's data trace,
+    /// without halting the core, then print each with its time
+    Trace {
+        #[command(flatten)]
+        target: TargetArgs,
+        /// Symbol paths or addresses of values of at most 4 bytes, or `watch!`
+        /// values and `Param`s holding one
+        #[arg(required = true)]
+        locations: Vec<String>,
+        /// How long to trace, in milliseconds
         #[arg(long, default_value_t = 1000)]
         duration: u64,
     },
@@ -338,6 +352,29 @@ fn main() -> Result<()> {
             print!(
                 "{}",
                 tasks::profile(&elf, &mut memory, Duration::from_millis(duration))?
+            );
+        }
+        Command::Trace {
+            target,
+            locations,
+            duration,
+        } => {
+            if let Some(session) = target.probe.session()? {
+                let mut args = words("trace", locations);
+                args.extend(["--duration".into(), duration.to_string()]);
+                return daemon::request(session, args);
+            }
+            let (probe, elf) = target.attach()?;
+            let mut session = probe.session.lock();
+            print!(
+                "{}",
+                trace::run(
+                    &probe,
+                    &mut session,
+                    elf.as_ref(),
+                    &locations,
+                    Duration::from_millis(duration)
+                )?
             );
         }
         Command::Values { target } => {

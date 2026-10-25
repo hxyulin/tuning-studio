@@ -190,6 +190,18 @@ pub fn render_watch(elf: &ElfInfo, memory: &mut dyn Memory, node: &SymbolNode) -
     ))
 }
 
+/// The field holding the value of a `Watch` or `Param`, and the unit shown after
+/// it.
+pub fn traced_value(
+    elf: &ElfInfo,
+    memory: &mut dyn Memory,
+    node: &SymbolNode,
+) -> Result<(SymbolNode, String)> {
+    let mut value = field(elf, memory, node, "value")?;
+    value.wrapper = None;
+    Ok((value, unit(elf, memory, node)))
+}
+
 /// The fields of a `Param` the host shows
 struct Param {
     value: SymbolNode,

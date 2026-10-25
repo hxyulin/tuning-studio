@@ -45,6 +45,7 @@ Without a session, a command attaches for its own run and needs `--chip`, and
 | `watch` | Read them repeatedly until Ctrl-C, every `--interval` ms; 0 reads as fast as the probe can |
 | `set` | Write one value, then read it back. A `Param` changes through the firmware |
 | `values` | Print every `Param` and `watch!` value the firmware declares |
+| `trace` | Record every write to up to four values for `--duration` ms, with its time and the function that wrote it |
 | `tasks` | Profile every Embassy task for `--duration` ms |
 | `halt`, `resume`, `step` | Run control |
 | `break`, `delete` | Hardware breakpoints on a function or an address. Needs a session |
@@ -104,6 +105,39 @@ On the [tune lab](../../firmware/tune-lab) at 10 MHz SWD, watching all four
 `watch!` values and two `Param`s ran at 623 ticks per second, against 146 when
 each was read alone. One value ran at about 860. `tuning-studio-api` puts its
 statics in one section, so they merge.
+
+## Traces
+
+`watch` samples a value, so it misses changes between reads. `trace` records
+every write instead, with the core's data trace, and does not halt the core:
+
+```text
+$ tuning-studio trace motor.error tune_lab::KP --duration 1000
+     0.000 ms  motor.error: f32 = 0.0014877319 rad/s
+     0.991 ms  motor.error: f32 = 0.0014877319 rad/s
+...
+motor.error: 1033 writes, 1009 per second, from SysTick 1033
+tune_lab::KP: 1028 writes, 1009 per second, 1028 reads, from Param::get 1028
+1.01 s at 65 MHz
+```
+
+Each DWT comparator matches one address, and the Cortex-M7 has four, so
+`trace` takes up to four values. Each must be at most 4 bytes: an integer,
+float, `bool` or C-like enum, or a `watch!` value or `Param` holding one. For a
+struct, trace its fields, such as `motor.state.value.speed`. Times are in core
+cycles, converted with the clock rate the CLI measures from the cycle counter.
+
+The trace goes through the ETF, 2 KB of on-chip trace memory, which the CLI
+drains through the debug port, so it needs no SWO pin. When writes arrive
+faster than the probe drains them, the ETF fills, the ITM drops trace packets,
+and `trace` reports how many times that happened. Each write takes up to 14
+bytes of trace. On the [select lab](../../firmware/select-lab), a value written
+faster than the probe drains it gave about 1,800 recorded writes per second at
+the default 4 MHz SWD clock and 4,600 at `--speed 10000`.
+
+`trace` has been tested on the STM32H723 only. It sets up the trace path
+itself, since probe-rs's STM32H7 setup expects a second trace funnel the
+H723 does not have.
 
 ## Tasks
 

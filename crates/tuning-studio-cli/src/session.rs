@@ -87,6 +87,15 @@ enum SessionCommand {
         #[arg(long, default_value_t = 1000)]
         duration: u64,
     },
+    /// Record every write to up to four values with the DWT's data trace. The
+    /// session pauses its other work while tracing.
+    Trace {
+        #[arg(required = true)]
+        locations: Vec<String>,
+        /// How long to trace, in milliseconds
+        #[arg(long, default_value_t = 1000)]
+        duration: u64,
+    },
     /// Print every `Param` and `watch!` value
     Values,
     /// Write one value, then read it back. A `Param` changes through the
@@ -545,6 +554,18 @@ fn handle(
             *out += &crate::tasks::profile(
                 elf,
                 &mut target.memory(&mut session)?,
+                Duration::from_millis(duration),
+            )?;
+        }
+        SessionCommand::Trace {
+            locations,
+            duration,
+        } => {
+            *out += &crate::trace::run(
+                target,
+                &mut session,
+                elf,
+                &locations,
                 Duration::from_millis(duration),
             )?;
         }
