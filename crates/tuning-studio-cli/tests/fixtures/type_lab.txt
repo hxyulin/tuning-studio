@@ -1,0 +1,184 @@
+type_lab::aggregates::BITS: Bits
+  word: u32 = 1065353216
+  float: f32 = 1.0
+  bytes: [u8; 4]
+    [0]: u8 = 0
+    [1]: u8 = 0
+    [2]: u8 = 128
+    [3]: u8 = 63
+type_lab::aggregates::LARGE: [u16; 300]
+  [0]: u16 = 0
+  [1]: u16 = 0
+  [2]: u16 = 0
+  [3]: u16 = 0
+  [4]: u16 = 0
+  [5]: u16 = 0
+  [6]: u16 = 0
+  [7]: u16 = 0
+  [8]: u16 = 0
+  [9]: u16 = 0
+  [10]: u16 = 0
+  [11]: u16 = 0
+  [12]: u16 = 0
+  [13]: u16 = 0
+  [14]: u16 = 0
+  [15]: u16 = 0
+  [16]: u16 = 0
+  [17]: u16 = 0
+  [18]: u16 = 0
+  [19]: u16 = 0
+  [20]: u16 = 0
+  [21]: u16 = 0
+  [22]: u16 = 0
+  [23]: u16 = 0
+  [24]: u16 = 0
+  [25]: u16 = 0
+  [26]: u16 = 0
+  [27]: u16 = 0
+  [28]: u16 = 0
+  [29]: u16 = 0
+  [30]: u16 = 0
+  [31]: u16 = 0
+  [32]: u16 = 0
+  [33]: u16 = 0
+  [34]: u16 = 0
+  [35]: u16 = 0
+  [36]: u16 = 0
+  [37]: u16 = 0
+  [38]: u16 = 0
+  [39]: u16 = 0
+  [40]: u16 = 0
+  [41]: u16 = 0
+  [42]: u16 = 0
+  [43]: u16 = 0
+  [44]: u16 = 0
+  [45]: u16 = 0
+  [46]: u16 = 0
+  [47]: u16 = 0
+  [48]: u16 = 0
+  [49]: u16 = 0
+  [50]: u16 = 0
+  [51]: u16 = 0
+  [52]: u16 = 0
+  [53]: u16 = 0
+  [54]: u16 = 0
+  [55]: u16 = 0
+  [56]: u16 = 0
+  [57]: u16 = 0
+  [58]: u16 = 0
+  [59]: u16 = 0
+  [60]: u16 = 0
+  [61]: u16 = 0
+  [62]: u16 = 0
+  [63]: u16 = 0
+  … 236 more; read type_lab::aggregates::LARGE[64] and later directly
+type_lab::aggregates::ROBOT: Robot<4>
+  axes: [Axis; 2]
+    [0]: Axis
+      position: f32 = 0.5
+      velocity: f32 = -0.25
+      gains: (f32, f32, f32)
+        __0: f32 = 10.0
+        __1: f32 = 0.1
+        __2: f32 = 0.01
+    [1]: Axis
+      position: f32 = 0.5
+      velocity: f32 = -0.25
+      gains: (f32, f32, f32)
+        __0: f32 = 10.0
+        __1: f32 = 0.1
+        __2: f32 = 0.01
+  matrix: [[i16; 4]; 3]
+    [0]: [i16; 4]
+      [0]: i16 = 1
+      [1]: i16 = 2
+      [2]: i16 = 3
+      [3]: i16 = 4
+    [1]: [i16; 4]
+      [0]: i16 = 5
+      [1]: i16 = 6
+      [2]: i16 = 7
+      [3]: i16 = 8
+    [2]: [i16; 4]
+      [0]: i16 = 9
+      [1]: i16 = 10
+      [2]: i16 = 11
+      [3]: i16 = 12
+  history: [f32; 4]
+    [0]: f32 = 0.0
+    [1]: f32 = 0.25
+    [2]: f32 = 0.5
+    [3]: f32 = 0.75
+  id: Id
+    __0: u32 = 77
+    __1: i16 = -7
+  cell: Cell<u32> = 5
+type_lab::aggregates::SHARED: Shared<type_lab::aggregates::Axis>
+  position: f32 = 0.5
+  velocity: f32 = -0.25
+  gains: (f32, f32, f32)
+    __0: f32 = 10.0
+    __1: f32 = 0.1
+    __2: f32 = 0.01
+type_lab::aggregates::TABLE: [u32; 4]
+  [0]: u32 = 1
+  [1]: u32 = 2
+  [2]: u32 = 3
+  [3]: u32 = 4
+type_lab::atomics::BOOL: Atomic<bool> = true
+type_lab::atomics::I16: Atomic<i16> = -1600
+type_lab::atomics::I32: Atomic<i32> = -320000
+type_lab::atomics::I8: Atomic<i8> = -8
+type_lab::atomics::ISIZE: Atomic<isize> = -42
+type_lab::atomics::PTR: Atomic<*mut u32> = 0x00000000
+type_lab::atomics::U16: Atomic<u16> = 1600
+type_lab::atomics::U32: Atomic<u32> = 320000
+type_lab::atomics::U8: Atomic<u8> = 7
+type_lab::atomics::USIZE: Atomic<usize> = 42
+type_lab::enums::COMMAND: Command = Position
+  target: f32 = 1.25
+  limit: f32 = 4.0
+type_lab::enums::DIRECTION: Direction = Reverse (-1)
+type_lab::enums::MODE: Mode = Running (1)
+type_lab::enums::NICHE: Option<core::num::nonzero::NonZero<u32>> = Some
+  __0: u32 = 9
+type_lab::enums::NONE: Option<f32> = None
+type_lab::enums::RESULT: Result<u32, i16> = Err
+  __0: i16 = -3
+type_lab::enums::SOME: Option<f32> = Some
+  __0: f32 = 2.5
+type_lab::enums::STOP: Command = Stop
+type_lab::live::MILLIS: u64 = 0
+type_lab::live::STEP: Atomic<u32> = 1
+type_lab::live::TICKS: Atomic<u32> = 0
+type_lab::live::WAVE: f32 = 0.0
+type_lab::pointers::NULL: *const u32 = 0x00000000
+type_lab::pointers::REFERENCE: &u32 = 0x080005c4
+type_lab::pointers::SLICE: &[i16] = [3 elements]
+  [0]: i16 = -1
+  [1]: i16 = 2
+  [2]: i16 = -3
+type_lab::pointers::TEXT: &str = "type lab ✓"
+type_lab::pointers::TO_ARRAY: *const [u16; 300] = 0x20000158
+type_lab::pointers::TO_AXIS: *mut type_lab::aggregates::Axis = 0x00000000
+type_lab::pointers::TO_POINTER: *const *const u32 = 0x20000004
+type_lab::pointers::TO_U32: *const u32 = 0x200000f8
+type_lab::scalars::BOOL: bool = true
+type_lab::scalars::CHAR: char = 'é' (U+00E9)
+type_lab::scalars::F32: f32 = 1.5
+type_lab::scalars::F64: f64 = -2.25
+type_lab::scalars::I128: i128 = -170141183460469231731687303715884105728
+type_lab::scalars::I16: i16 = -1600
+type_lab::scalars::I32: i32 = -320000
+type_lab::scalars::I64: i64 = -9223372036854775808
+type_lab::scalars::I8: i8 = -8
+type_lab::scalars::INFINITY: f64 = inf
+type_lab::scalars::ISIZE: isize = -123456
+type_lab::scalars::NAN: f32 = NaN
+type_lab::scalars::NEG_ZERO: f32 = -0.0
+type_lab::scalars::U128: u128 = 340282366920938463463374607431768211455
+type_lab::scalars::U16: u16 = 48879
+type_lab::scalars::U32: u32 = 3735928559
+type_lab::scalars::U64: u64 = 18446744073709551615
+type_lab::scalars::U8: u8 = 171
+type_lab::scalars::USIZE: usize = 123456

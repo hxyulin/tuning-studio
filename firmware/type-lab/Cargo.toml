@@ -1,0 +1,24 @@
+[package]
+name = "type-lab"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+
+# Standalone firmware, not part of the host workspace.
+[workspace]
+
+[dependencies]
+cortex-m = "0.7"
+cortex-m-rt = "0.7"
+
+[profile.release]
+debug = 2
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+
+# The lab's own compile unit describes every type it tests.
+[profile.release.package."*"]
+debug = 0

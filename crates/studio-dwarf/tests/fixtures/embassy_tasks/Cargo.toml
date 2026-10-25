@@ -1,0 +1,38 @@
+[package]
+name = "embassy_fixture"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Standalone: not part of the tuning-tools workspace.
+[workspace]
+
+[dependencies]
+studio-task-trace = { package = "tuning-studio-trace", path = "../../../../studio-task-trace", optional = true }
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7"
+embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "trace"] }
+embassy-sync = "0.8"
+
+# `src/rm_task_stats.rs` gates its trace hooks on this, as the firmware crate does
+[features]
+default = ["embassy"]
+embassy = []
+trace = ["dep:studio-task-trace"]
+
+[profile.release]
+debug = 2
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+
+# Keeps the fixture small; the task types are described by the fixture's own
+# compile unit, which instantiates them
+[profile.release.package."*"]
+debug = 0
+
+[[bin]]
+name = "inspector_lab"
+path = "src/bin/inspector_lab.rs"
+required-features = ["trace"]

@@ -1,0 +1,24 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+# Standalone firmware projects that rebuild the DWARF test ELFs.
+exclude = [
+  "crates/studio-dwarf/tests/fixtures/rust_embedded",
+  "crates/studio-dwarf/tests/fixtures/embassy_tasks",
+]
+
+[workspace.package]
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.99.1"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/hxyulin/tuning-tools"
+authors = ["hxyulin <hxyulin@proton.me>"]
+
+[workspace.dependencies]
+gimli = { version = "0.34", default-features = false, features = ["read", "std"] }
+object = { version = "0.40", default-features = false, features = ["read", "elf", "std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"

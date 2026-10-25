@@ -1,0 +1,22 @@
+[package]
+name = "rust_fixture"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Standalone: not part of the tuning-tools workspace.
+[workspace]
+
+[dependencies]
+
+# Mirrors rm-embedded-rs release: thin LTO and multiple codegen units produce
+# the `.llvm.<n>` suffixes and anonymous symbols real firmware has.
+[profile.release]
+debug = 2
+lto = "thin"
+opt-level = "s"
+codegen-units = 8
+panic = "abort"
+
+[profile.dev]
+panic = "abort"
