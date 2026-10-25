@@ -1,16 +1,14 @@
 # tuning-studio-dwarf
 
-ELF and DWARF inspection for C, C++ and Rust embedded firmware. This host-side
-library powers Tuning Studio's symbol browser, Live Watch and Embassy task view.
-It can parse a firmware image without opening a probe or starting a UI.
+ELF and DWARF inspection for C, C++ and Rust embedded firmware. The
+`tuning-studio` CLI uses it to resolve symbol paths, decode values and find
+Embassy tasks. It parses a firmware image without opening a probe.
 
 ## Use it
 
-For a published release:
-
 ```toml
 [dependencies]
-tuning-studio-dwarf = "0.1.3"
+tuning-studio-dwarf = { git = "https://github.com/hxyulin/tuning-tools" }
 ```
 
 The Rust library name is **`studio_dwarf`**.
@@ -40,11 +38,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 Keep debug information in the ELF (`debug = 2`, `strip = false` for Rust release
 profiles). Parsing cannot restore optimized-away locals. Pointer resolution and
-live previews need a caller-provided memory reader; the parser does not connect
+live previews need a memory reader from the caller; the parser does not connect
 to hardware. Compiler-generated async layouts may change between toolchains.
 Use diagnostics and unsupported-node results rather than assuming every type
 can be interpreted. Numeric plot values use `f64`; exact inspection text is
-handled separately by the app layer.
+left to the caller.
 
 ## Development
 
@@ -60,4 +58,5 @@ for C, C++ and Rust examples, including the runnable inspector lab.
 The parser originated in `datavis-rs`; provenance is recorded in the source.
 
 Part of [Tuning Studio](https://github.com/hxyulin/tuning-tools). Host-only (`std`),
-MIT licensed. The 0.1 Rust API is evolving; use matching workspace versions.
+MIT licensed. The API changes between versions; use the same version as the
+other Tuning Studio crates.

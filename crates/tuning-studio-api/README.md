@@ -48,7 +48,7 @@ writer, so no write is lost or torn. The CLI also refuses raw writes into a
 
 ```toml
 [dependencies]
-tuning-studio-api = { path = "../tuning-tools/crates/tuning-studio-api" }
+tuning-studio-api = { git = "https://github.com/hxyulin/tuning-tools" }
 ```
 
 ```rust
@@ -134,6 +134,10 @@ The crate passes each static's address through `core::hint::black_box` before
 using it. Without that, LLVM saw every access to a `Param` at a constant
 offset and, in an LTO build, split two of them into separate variables. The
 DWARF then described storage that no longer existed.
+
+See [tune-lab](../../firmware/tune-lab) for a complete program, and
+[select-lab](../../firmware/select-lab) for measurements of task-local reads
+against `watch!` reads.
 
 ## Not yet
 
