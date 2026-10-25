@@ -120,10 +120,11 @@ pub fn render_watch(elf: &ElfInfo, memory: &mut dyn Memory, node: &SymbolNode) -
             return Ok(value::render_snapshot(elf, memory, &value, &node.path));
         }
     }
-    bail!(
-        "{} changed during each of {WATCH_ATTEMPTS} reads",
-        node.path
-    )
+    // Inline, as other unreadable values are, so a `watch` keeps going.
+    Ok(format!(
+        "{}: {} = <changed during each of {WATCH_ATTEMPTS} reads>\n",
+        node.path, value.type_name
+    ))
 }
 
 /// The fields of a `Param` the host shows
@@ -327,7 +328,10 @@ mod tests {
             "motor.speed: f32 = 12.5\n"
         );
         write(&mut memory, 7, 12.5, 8);
-        assert!(render_watch(&elf, &mut memory, &speed).is_err());
+        assert_eq!(
+            render_watch(&elf, &mut memory, &speed).unwrap(),
+            "motor.speed: f32 = <changed during each of 10 reads>\n"
+        );
 
         let state = node(&elf, &mut memory, "motor.state");
         // `Motor` holds a u64, so padding follows `end`.

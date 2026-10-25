@@ -79,7 +79,8 @@ enum Command {
         /// Symbol paths or addresses, as for `read`
         #[arg(required = true)]
         locations: Vec<String>,
-        /// Time between reads in milliseconds
+        /// Time between reads in milliseconds; 0 reads as fast as the probe can.
+        /// A session reads at most every 1 ms.
         #[arg(long, default_value_t = 100)]
         interval: u64,
         /// Stop after this many reads
@@ -309,7 +310,7 @@ fn main() -> Result<()> {
                 .iter()
                 .map(|location| path::locate(elf.as_ref(), &mut memory, location))
                 .collect::<Result<Vec<_>>>()?;
-            let interval = Duration::from_millis(interval.max(1));
+            let interval = Duration::from_millis(interval);
             watch(elf.as_ref(), &mut memory, &locations, interval, count)?;
         }
         Command::Values { target } => {
@@ -480,7 +481,9 @@ fn watch(
         // Keep to the schedule; after a slow read, skip the reads it overran.
         next += interval;
         let now = Instant::now();
-        if next < now {
+        if interval.is_zero() {
+            next = now;
+        } else if next < now {
             next += interval * ((now - next).as_nanos() / interval.as_nanos()) as u32 + interval;
         }
         while !stop.load(Ordering::Relaxed) && Instant::now() < next {

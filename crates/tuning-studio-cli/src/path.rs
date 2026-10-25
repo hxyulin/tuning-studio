@@ -190,10 +190,17 @@ fn parse_steps(
             let (index, tail) = tail
                 .split_once(']')
                 .ok_or_else(|| anyhow!("missing `]` in `{text}`"))?;
+            // `[task 0]` is a slot of an Embassy task pool, seen as a `TaskStorage`.
+            let (slot, index) = match index.strip_prefix("task ") {
+                Some(slot) => (true, slot),
+                None => (false, index),
+            };
             let index: u64 = index
                 .parse()
                 .map_err(|_| anyhow!("bad index `{index}` in `{text}`"))?;
-            if describe(elf, memory, &node)?.sequence {
+            if slot {
+                (Step::Task(index), tail)
+            } else if describe(elf, memory, &node)?.sequence {
                 (Step::SliceIndex(index), tail)
             } else {
                 (Step::Index(index), tail)
@@ -347,5 +354,35 @@ mod tests {
             assert!(locate(Some(&elf), &mut memory, text).is_err(), "{text}");
         }
         assert!(locate(None, &mut memory, "0x20000000:Axis").is_err());
+    }
+}
+
+#[cfg(test)]
+mod task_tests {
+    use super::*;
+    use crate::memory::Fake;
+    use studio_dwarf::ElfParser;
+
+    #[test]
+    fn parses_task_slots() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/select_lab.elf");
+        let elf = ElfParser::parse(path).unwrap();
+        let mut memory = Fake::from_elf(path);
+        let text = "select_lab::waves::POOL[task 0].future";
+        let Location::Node(node) = locate(Some(&elf), &mut memory, text).unwrap() else {
+            panic!("{text} is not a node");
+        };
+        assert_eq!(node.path, text);
+        assert!(
+            node.type_name.contains("async_fn_env"),
+            "{}",
+            node.type_name
+        );
+        for bad in [
+            "select_lab::waves::POOL[task 1]",
+            "select_lab::waves::POOL[task x]",
+        ] {
+            assert!(locate(Some(&elf), &mut memory, bad).is_err(), "{bad}");
+        }
     }
 }
