@@ -82,7 +82,17 @@ function Lane({ unit, watches, last, theme }: { unit: string; watches: Watch[]; 
     const el = box.current!;
     const ids = watches.map((w) => w.id);
     const grid = css("--grid");
-    const axis = { stroke: css("--muted"), grid: { stroke: grid, width: 1 }, ticks: { stroke: grid, width: 1 }, font: `11px ${css("--mono")}` };
+    const font = `11px ${css("--mono")}`;
+    const axis = { stroke: css("--muted"), grid: { stroke: grid, width: 1 }, ticks: { stroke: grid, width: 1 }, font };
+    // As wide as the widest label: `8.150e+8` overflows a fixed width
+    const ySize = (u: uPlot, values: string[] | null) => {
+      if (!values?.length) return 64;
+      u.ctx.save();
+      u.ctx.font = font;
+      const widest = Math.max(...values.map((v) => u.ctx.measureText(v).width));
+      u.ctx.restore();
+      return Math.max(64, Math.ceil(widest) + 24 + (unit ? 16 : 0));
+    };
     const shaped = () => samples.window(ids, view.from, view.to, Math.max(50, Math.floor(el.clientWidth))).data;
     const plot = new uPlot(
       {
@@ -95,7 +105,7 @@ function Lane({ unit, watches, last, theme }: { unit: string; watches: Watch[]; 
         axes: [
           { ...axis, size: last ? 28 : 8, values: (_u, splits) => splits.map((v) => (last ? `${(v - view.to).toFixed(1)} s` : "")) },
           // Large values as exponents, which fit the axis; uPlot's default groups digits and overflows
-          { ...axis, size: 64, label: unit || undefined, labelSize: unit ? 16 : 0, labelFont: `11px ${css("--mono")}`, values: (_u, splits, _i, _space, step) => formatTicks(splits, step) },
+          { ...axis, size: ySize, label: unit || undefined, labelSize: unit ? 16 : 0, labelFont: font, values: (_u, splits, _i, _space, step) => formatTicks(splits, step) },
         ],
         series: [
           { label: "t", value: (_u, v) => (v == null ? "" : `${(v - view.to).toFixed(3)} s`) },
