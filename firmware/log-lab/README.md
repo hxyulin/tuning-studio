@@ -19,5 +19,6 @@ cd firmware/log-lab
 cargo run --release
 ```
 
-While it runs, type session commands such as `read log_lab::MILLIS`,
-`set PANIC 1` or `reset`. Ctrl-C detaches.
+While it runs, other commands go to it from another terminal, with no `--chip`
+or `--elf`: `tuning-studio read log_lab::MILLIS`, `tuning-studio set PANIC 1`
+or `tuning-studio reset`. Ctrl-C detaches.

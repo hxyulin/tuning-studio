@@ -1,3 +1,4 @@
+mod daemon;
 mod debug;
 mod flash;
 mod gdb;
@@ -12,7 +13,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand};
 use std::io::{IsTerminal, Write};
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -22,12 +23,14 @@ use studio_dwarf::{ElfInfo, ElfParser, Step};
 use memory::Memory;
 use path::Location;
 
+/// Inspect and tune a running target over SWD.
+///
+/// `run` and `attach` keep the probe and serve the other commands, so `read`,
+/// `set`, `watch`, `halt`, `break` and the rest go to the running session and
+/// need no `--chip` or `--elf`. Without a session, most commands attach for
+/// their own run instead.
 #[derive(Parser)]
-#[command(
-    name = "tuning-studio",
-    version,
-    about = "Inspect and tune a running target over SWD"
-)]
+#[command(name = "tuning-studio", version)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -35,13 +38,36 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Flash and reset the firmware, then print its RTT logs and serve commands
+    /// until Ctrl-C. Works as a Cargo runner.
+    Run {
+        #[command(flatten)]
+        probe: ProbeArgs,
+        /// Firmware ELF
+        elf: PathBuf,
+        /// Read the flash back after programming
+        #[arg(long)]
+        verify: bool,
+        #[command(flatten)]
+        serve: ServeArgs,
+    },
+    /// Print the RTT logs of running firmware and serve commands until Ctrl-C,
+    /// without flashing or resetting
+    Attach {
+        #[command(flatten)]
+        probe: ProbeArgs,
+        /// Firmware ELF, for symbols and logs
+        elf: Option<PathBuf>,
+        #[command(flatten)]
+        serve: ServeArgs,
+    },
     /// Read variables or addresses once
     Read {
         #[command(flatten)]
         target: TargetArgs,
         /// Symbol paths, such as `CONTROL.yaw.target_rpm` or `buffer[3]`, or addresses
         /// with an optional type and path, such as `0x24000070`, `0x24000070:f32` or
-        /// `0x20000038:Axis.gains.2`. Types other than the primitives need `--elf`.
+        /// `0x20000038:Axis.gains.2`. Types other than the primitives need an ELF.
         #[arg(required = true)]
         locations: Vec<String>,
     },
@@ -68,39 +94,41 @@ enum Command {
         #[arg(allow_negative_numbers = true)]
         value: String,
     },
-    /// Attach once and run commands from stdin, one per line: read, watch, set,
-    /// halt, resume, step, break and more. `help` lists them.
-    Session {
+    /// Halt the core
+    Halt {
         #[command(flatten)]
         target: TargetArgs,
-        /// Also serve GDB on this address; `--gdb` alone uses 127.0.0.1:1337
-        #[arg(long, num_args = 0..=1, default_missing_value = "127.0.0.1:1337")]
-        gdb: Option<SocketAddr>,
     },
-    /// Flash and reset the firmware, then print its RTT logs and take session
-    /// commands on stdin until Ctrl-C. Works as a Cargo runner.
-    Run {
+    /// Resume the core
+    Resume {
         #[command(flatten)]
-        probe: ProbeArgs,
-        /// Firmware ELF
-        elf: PathBuf,
-        /// Read the flash back after programming
+        target: TargetArgs,
+    },
+    /// Execute one instruction on a halted core
+    Step {
+        #[command(flatten)]
+        target: TargetArgs,
+    },
+    /// Set a hardware breakpoint on a function or an address. Needs a running
+    /// session, since probe-rs clears breakpoints on detach.
+    Break {
+        /// Probe of the session, needed when several are running
         #[arg(long)]
-        verify: bool,
-        /// Also serve GDB on this address; `--gdb` alone uses 127.0.0.1:1337
-        #[arg(long, num_args = 0..=1, default_missing_value = "127.0.0.1:1337")]
-        gdb: Option<SocketAddr>,
+        probe: Option<String>,
+        /// Function name, such as `SysTick` or `control::tick`, or an address
+        target: String,
     },
-    /// Print the RTT logs of running firmware and take session commands on stdin,
-    /// without flashing or resetting
-    Attach {
+    /// Clear the breakpoints with these numbers, or all of them
+    Delete {
+        /// Probe of the session, needed when several are running
+        #[arg(long)]
+        probe: Option<String>,
+        ids: Vec<u32>,
+    },
+    /// Print the core status, and a session's breakpoints and watches
+    Status {
         #[command(flatten)]
-        probe: ProbeArgs,
-        /// Firmware ELF
-        elf: PathBuf,
-        /// Also serve GDB on this address; `--gdb` alone uses 127.0.0.1:1337
-        #[arg(long, num_args = 0..=1, default_missing_value = "127.0.0.1:1337")]
-        gdb: Option<SocketAddr>,
+        target: TargetArgs,
     },
     /// Program an ELF into flash, then reset
     Flash {
@@ -118,11 +146,6 @@ enum Command {
         #[arg(long)]
         halt: bool,
     },
-    /// Erase all flash
-    Erase {
-        #[command(flatten)]
-        probe: ProbeArgs,
-    },
     /// Reset the target
     Reset {
         #[command(flatten)]
@@ -131,13 +154,29 @@ enum Command {
         #[arg(long)]
         halt: bool,
     },
+    /// Erase all flash
+    Erase {
+        #[command(flatten)]
+        probe: ProbeArgs,
+    },
     /// List the connected debug probes
     List,
 }
 
 #[derive(Args)]
+struct ServeArgs {
+    /// Also take commands from stdin, one per line; `help` lists them
+    #[arg(short, long)]
+    interactive: bool,
+    /// Also serve GDB on this address; `--gdb` alone uses 127.0.0.1:1337
+    #[arg(long, num_args = 0..=1, default_missing_value = "127.0.0.1:1337")]
+    gdb: Option<SocketAddr>,
+}
+
+#[derive(Args)]
 struct TargetArgs {
-    /// Firmware ELF with DWARF debug information, needed for symbol names
+    /// Firmware ELF with DWARF debug information, needed for symbol names without a
+    /// session
     #[arg(long)]
     elf: Option<PathBuf>,
     #[command(flatten)]
@@ -146,9 +185,9 @@ struct TargetArgs {
 
 #[derive(Args)]
 struct ProbeArgs {
-    /// probe-rs chip name, such as `STM32H723VGTx`
+    /// probe-rs chip name, such as `STM32H723VGTx`; not needed with a session
     #[arg(long)]
-    chip: String,
+    chip: Option<String>,
     /// Probe as `VID:PID` or `VID:PID:SERIAL`, needed when several are connected
     #[arg(long)]
     probe: Option<String>,
@@ -158,30 +197,82 @@ struct ProbeArgs {
 }
 
 impl ProbeArgs {
-    fn attach(&self) -> Result<target::Target> {
-        target::Target::attach(&self.chip, self.probe.as_deref(), self.speed, false)
+    fn attach(&self, erase_all: bool) -> Result<target::Target> {
+        let chip = self
+            .chip
+            .as_deref()
+            .ok_or_else(|| anyhow!("--chip is needed when no `run` or `attach` is running"))?;
+        target::Target::attach(chip, self.probe.as_deref(), self.speed, erase_all)
+    }
+
+    /// The running session for this probe
+    fn session(&self) -> Result<Option<std::os::unix::net::UnixStream>> {
+        daemon::find(self.probe.as_deref())
+    }
+
+    /// Fail when a session holds the probe, since it would make attaching fail
+    /// with a less clear error.
+    fn no_session(&self, command: &str) -> Result<()> {
+        if self.session()?.is_some() {
+            bail!("`{command}` needs the probe; stop the running `run` or `attach` first");
+        }
+        Ok(())
     }
 }
 
 impl TargetArgs {
-    fn attach(&self) -> Result<target::Target> {
-        self.probe.attach()
-    }
-
     fn elf(&self) -> Result<Option<ElfInfo>> {
         self.elf.as_deref().map(parse_elf).transpose()
     }
+
+    /// Attach for one command, with the ELF if one was given.
+    fn attach(&self) -> Result<(target::Target, Option<ElfInfo>)> {
+        let elf = self.elf()?;
+        Ok((self.probe.attach(false)?, elf))
+    }
 }
 
-fn parse_elf(path: &std::path::Path) -> Result<ElfInfo> {
+fn parse_elf(path: &Path) -> Result<ElfInfo> {
     ElfParser::parse(path).with_context(|| format!("could not parse {}", path.display()))
+}
+
+/// The session grammar's words for a command
+fn words(command: &str, rest: impl IntoIterator<Item = String>) -> Vec<String> {
+    std::iter::once(command.to_string()).chain(rest).collect()
 }
 
 fn main() -> Result<()> {
     match Cli::parse().command {
+        Command::Run {
+            probe,
+            elf,
+            verify,
+            serve,
+        } => {
+            probe.no_session("run")?;
+            let info = parse_elf(&elf)?;
+            let target = probe.attach(false)?;
+            {
+                let mut session = target.session.lock();
+                flash::flash(&mut session, &elf, verify, false)?;
+                if let Some(mut logs) = logs::Logs::new(&elf)? {
+                    logs.restart(&mut session)?;
+                }
+                flash::reset(&mut session, false)?;
+            }
+            serve_session(&target, Some(info), Some(elf), serve)?;
+        }
+        Command::Attach { probe, elf, serve } => {
+            probe.no_session("attach")?;
+            let info = elf.as_deref().map(parse_elf).transpose()?;
+            let target = probe.attach(false)?;
+            serve_session(&target, info, elf, serve)?;
+        }
         Command::Read { target, locations } => {
-            let elf = target.elf()?;
-            let probe = target.attach()?;
+            if let Some(session) = target.probe.session()? {
+                return daemon::request(session, words("read", locations));
+            }
+            let (probe, elf) = target.attach()?;
             let mut session = probe.session.lock();
             let mut memory = probe.memory(&mut session)?;
             for location in &locations {
@@ -195,8 +286,15 @@ fn main() -> Result<()> {
             interval,
             count,
         } => {
-            let elf = target.elf()?;
-            let probe = target.attach()?;
+            if let Some(session) = target.probe.session()? {
+                let mut args = words("watch", locations);
+                args.extend(["--interval".into(), interval.to_string()]);
+                if let Some(count) = count {
+                    args.extend(["--count".into(), count.to_string()]);
+                }
+                return daemon::request(session, args);
+            }
+            let (probe, elf) = target.attach()?;
             let mut session = probe.session.lock();
             let mut memory = probe.memory(&mut session)?;
             let locations = locations
@@ -211,56 +309,27 @@ fn main() -> Result<()> {
             location,
             value,
         } => {
-            let elf = target.elf()?;
-            let probe = target.attach()?;
+            if let Some(session) = target.probe.session()? {
+                return daemon::request(session, words("set", [location, value]));
+            }
+            let (probe, elf) = target.attach()?;
             let mut session = probe.session.lock();
             let mut memory = probe.memory(&mut session)?;
             let location = path::locate(elf.as_ref(), &mut memory, &location)?;
             set(elf.as_ref(), &mut memory, &location, &value)?;
             print!("{}", read(elf.as_ref(), &mut memory, &location)?);
         }
-        Command::Session { target, gdb } => {
-            let elf = target.elf()?;
-            let probe = target.attach()?;
-            let options = session::Options {
-                elf: target.elf,
-                gdb,
-                logs: false,
-            };
-            session::run(&probe, elf, options)?;
+        Command::Halt { target } => run_control(&target, "halt", debug::halt)?,
+        Command::Resume { target } => run_control(&target, "resume", debug::resume)?,
+        Command::Step { target } => run_control(&target, "step", debug::step)?,
+        Command::Status { target } => run_control(&target, "status", |_| Ok(()))?,
+        Command::Break { probe, target } => {
+            let session = daemon::find(probe.as_deref())?.ok_or_else(no_session_for_breakpoints)?;
+            daemon::request(session, words("break", [target]))?;
         }
-        Command::Run {
-            probe,
-            elf,
-            verify,
-            gdb,
-        } => {
-            let info = parse_elf(&elf)?;
-            let target = probe.attach()?;
-            {
-                let mut session = target.session.lock();
-                flash::flash(&mut session, &elf, verify, false)?;
-                if let Some(mut logs) = logs::Logs::new(&elf)? {
-                    logs.restart(&mut session)?;
-                }
-                flash::reset(&mut session, false)?;
-            }
-            let options = session::Options {
-                elf: Some(elf),
-                gdb,
-                logs: true,
-            };
-            session::run(&target, Some(info), options)?;
-        }
-        Command::Attach { probe, elf, gdb } => {
-            let info = parse_elf(&elf)?;
-            let target = probe.attach()?;
-            let options = session::Options {
-                elf: Some(elf),
-                gdb,
-                logs: true,
-            };
-            session::run(&target, Some(info), options)?;
+        Command::Delete { probe, ids } => {
+            let session = daemon::find(probe.as_deref())?.ok_or_else(no_session_for_breakpoints)?;
+            daemon::request(session, words("delete", ids.iter().map(u32::to_string)))?;
         }
         Command::Flash {
             probe,
@@ -269,22 +338,84 @@ fn main() -> Result<()> {
             chip_erase,
             halt,
         } => {
-            let target = probe.attach()?;
+            if let Some(session) = probe.session()? {
+                let mut args = words("flash", [daemon::absolute(&elf)?]);
+                for (set, flag) in [
+                    (verify, "--verify"),
+                    (chip_erase, "--chip-erase"),
+                    (halt, "--halt"),
+                ] {
+                    if set {
+                        args.push(flag.into());
+                    }
+                }
+                return daemon::request(session, args);
+            }
+            let target = probe.attach(false)?;
             let mut session = target.session.lock();
             flash::flash(&mut session, &elf, verify, chip_erase)?;
             flash::reset(&mut session, halt)?;
         }
-        Command::Erase { probe } => {
-            let target =
-                target::Target::attach(&probe.chip, probe.probe.as_deref(), probe.speed, true)?;
-            flash::erase(&mut target.session.lock())?;
-        }
         Command::Reset { probe, halt } => {
-            let target = probe.attach()?;
+            if let Some(session) = probe.session()? {
+                let mut args = words("reset", []);
+                if halt {
+                    args.push("--halt".into());
+                }
+                return daemon::request(session, args);
+            }
+            let target = probe.attach(false)?;
             flash::reset(&mut target.session.lock(), halt)?;
+        }
+        Command::Erase { probe } => {
+            probe.no_session("erase")?;
+            flash::erase(&mut probe.attach(true)?.session.lock())?;
         }
         Command::List => target::list(),
     }
+    Ok(())
+}
+
+fn serve_session(
+    target: &target::Target,
+    info: Option<ElfInfo>,
+    elf: Option<PathBuf>,
+    serve: ServeArgs,
+) -> Result<()> {
+    let options = session::Options {
+        elf,
+        gdb: serve.gdb,
+        interactive: serve.interactive,
+    };
+    session::run(target, info, options)
+}
+
+fn no_session_for_breakpoints() -> anyhow::Error {
+    anyhow!(
+        "breakpoints need a running `run` or `attach`, since probe-rs clears them when it \
+         detaches"
+    )
+}
+
+/// Halt, resume, step or print the status, through the session if one runs. Without
+/// one, the core keeps the state `action` leaves when the probe detaches.
+fn run_control(
+    target: &TargetArgs,
+    command: &str,
+    action: fn(&mut probe_rs::Session) -> Result<()>,
+) -> Result<()> {
+    if let Some(session) = target.probe.session()? {
+        return daemon::request(session, words(command, []));
+    }
+    let (probe, elf) = target.attach()?;
+    let mut session = probe.session.lock();
+    action(&mut session)?;
+    let status = debug::status(&mut session)?;
+    let breakpoints = debug::Breakpoints::default();
+    println!(
+        "{}",
+        debug::describe_status(elf.as_ref(), &mut session, &breakpoints, status)?
+    );
     Ok(())
 }
 

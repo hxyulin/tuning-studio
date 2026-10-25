@@ -1,22 +1,30 @@
-//! One attachment that takes a command per line on stdin. The main thread owns the
-//! probe: it runs each command, prints due watches and RTT logs, reports when the
-//! core halts or resumes, and drives the GDB server. A second thread only reads stdin.
+//! One attachment that serves commands from the socket, and from stdin with
+//! `--interactive`. The main thread owns the probe: it runs each command, prints
+//! due watches and RTT logs, reports when the core halts or resumes, and drives the
+//! GDB server. Other threads only read stdin and the socket.
 //!
-//! The session ends on `quit` or Ctrl-C, and on end of input unless it streams logs.
-//! It resumes a halted core, and detaching clears the breakpoints.
+//! A command's output goes back to whoever sent it. Logs, halts and GDB events go
+//! to this process's stdout.
+//!
+//! The session ends on `quit` from stdin or on Ctrl-C. It resumes a halted core,
+//! and detaching clears the breakpoints.
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
-use probe_rs::{CoreStatus, VectorCatchCondition};
-use std::io::{BufRead, Write};
+use probe_rs::{CoreStatus, Session, VectorCatchCondition};
+use std::collections::HashMap;
+use std::fmt::Write as _;
+use std::io::{BufRead, BufReader, Write};
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 use studio_dwarf::{ElfInfo, ElfParser};
 
+use crate::daemon::{self, Request, Response};
 use crate::debug::{self, Breakpoints};
 use crate::flash;
 use crate::gdb;
@@ -28,15 +36,16 @@ use crate::target::Target;
 const STATUS_INTERVAL: Duration = Duration::from_millis(50);
 /// How often the session reads RTT
 const LOG_INTERVAL: Duration = Duration::from_millis(10);
+/// A client that cannot take output this long is dropped.
+const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub struct Options {
     /// Firmware ELF, for symbols, logs and `flash`
     pub elf: Option<PathBuf>,
     /// Serve GDB on this address
     pub gdb: Option<SocketAddr>,
-    /// Print RTT logs, halt on a HardFault so its cause stays visible, and keep
-    /// running after the end of input
-    pub logs: bool,
+    /// Also take commands from stdin
+    pub interactive: bool,
 }
 
 #[derive(Parser)]
@@ -96,11 +105,19 @@ enum SessionCommand {
         #[arg(long)]
         halt: bool,
     },
-    /// Program the ELF again, which may have been rebuilt, then reset
+    /// Program an ELF, by default the session's, which may have been rebuilt; then
+    /// reset. The session uses the new ELF's symbols and logs from then on.
     Flash {
+        elf: Option<PathBuf>,
         /// Read the flash back afterwards
         #[arg(long)]
         verify: bool,
+        /// Erase the whole chip rather than only the sectors the ELF uses
+        #[arg(long)]
+        chip_erase: bool,
+        /// Halt at the reset vector instead of running
+        #[arg(long)]
+        halt: bool,
     },
     /// Print the core status, breakpoints and watches
     Status,
@@ -108,8 +125,30 @@ enum SessionCommand {
     Quit,
 }
 
+/// Where a command's output goes
+#[derive(Clone, Copy, PartialEq)]
+enum Sink {
+    Stdout,
+    Client(u32),
+}
+
+enum Input {
+    Stdin(String),
+    Connected(u32, UnixStream),
+    Request(u32, String),
+    Disconnected(u32),
+}
+
+enum Outcome {
+    Done,
+    /// A watch now answers for the command until it ends.
+    Watching,
+    Quit,
+}
+
 struct Watch {
     id: u32,
+    sink: Sink,
     texts: Vec<String>,
     locations: Vec<Location>,
     interval: Duration,
@@ -126,20 +165,77 @@ struct State {
     next_watch: u32,
     breakpoints: Breakpoints,
     status: Option<CoreStatus>,
+    clients: HashMap<u32, UnixStream>,
+}
+
+impl State {
+    /// Send a response to a client. On failure the client and its watches go.
+    fn send(&mut self, id: u32, response: &Response) {
+        let Some(stream) = self.clients.get_mut(&id) else {
+            return;
+        };
+        let mut line = serde_json::to_vec(response).expect("responses serialize");
+        line.push(b'\n');
+        if stream.write_all(&line).is_err() {
+            self.drop_client(id);
+        }
+    }
+
+    fn drop_client(&mut self, id: u32) {
+        self.clients.remove(&id);
+        self.watches.retain(|w| w.sink != Sink::Client(id));
+    }
+
+    /// Deliver a finished command's output and result.
+    fn finish(&mut self, sink: Sink, output: String, error: Option<String>) {
+        match sink {
+            Sink::Stdout => {
+                print!("{output}");
+                if let Some(error) = error {
+                    println!("error: {error}");
+                }
+            }
+            Sink::Client(id) => {
+                if !output.is_empty() {
+                    self.send(
+                        id,
+                        &Response {
+                            output: Some(output),
+                            ..Response::default()
+                        },
+                    );
+                }
+                self.send(
+                    id,
+                    &Response {
+                        done: true,
+                        error,
+                        ..Response::default()
+                    },
+                );
+            }
+        }
+    }
 }
 
 pub fn run(target: &Target, elf: Option<ElfInfo>, options: Options) -> Result<()> {
+    let socket = daemon::listen(&target.probe_id)?;
     let stop = Arc::new(AtomicBool::new(false));
     let handler = Arc::clone(&stop);
     ctrlc::set_handler(move || handler.store(true, Ordering::Relaxed))?;
-    let (lines, input) = mpsc::channel();
-    std::thread::spawn(move || {
-        for line in std::io::stdin().lock().lines() {
-            if lines.send(line).is_err() {
-                break;
+    let (sender, input) = mpsc::channel();
+    if options.interactive {
+        let sender = sender.clone();
+        std::thread::spawn(move || {
+            for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+                if sender.send(Input::Stdin(line)).is_err() {
+                    break;
+                }
             }
-        }
-    });
+        });
+    }
+    let listener = socket.listener.try_clone()?;
+    std::thread::spawn(move || accept(listener, sender));
     // A signal that lands during a USB transfer makes macOS fail the transfer, and
     // the probe stays out of step afterwards. Block SIGINT here so one of the threads
     // above takes it; they inherited the mask from before this call.
@@ -153,20 +249,16 @@ pub fn run(target: &Target, elf: Option<ElfInfo>, options: Options) -> Result<()
     if let Some(address) = options.gdb {
         println!("GDB server listening on {address}");
     }
-    let logs = match (&options.elf, options.logs) {
-        (Some(path), true) => Logs::new(path)?,
-        _ => None,
-    };
-    if options.logs {
-        target
-            .session
-            .lock()
-            .core(0)?
-            .enable_vector_catch(VectorCatchCondition::HardFault)?;
-    }
-    if options.logs && logs.is_none() {
+    let logs = options.elf.as_deref().map(Logs::new).transpose()?.flatten();
+    if options.elf.is_some() && logs.is_none() {
         println!("the ELF has no RTT control block, so there are no logs to show");
     }
+    // Halt on a HardFault, so a panic's cause stays visible.
+    target
+        .session
+        .lock()
+        .core(0)?
+        .enable_vector_catch(VectorCatchCondition::HardFault)?;
     let mut state = State {
         elf_path: options.elf,
         elf,
@@ -176,12 +268,12 @@ pub fn run(target: &Target, elf: Option<ElfInfo>, options: Options) -> Result<()
         next_watch: 0,
         breakpoints: Breakpoints::default(),
         status: None,
+        clients: HashMap::new(),
     };
     let mut next_status = Instant::now();
     let mut next_logs = Instant::now();
-    let mut input_open = true;
 
-    while !stop.load(Ordering::Relaxed) {
+    'session: while !stop.load(Ordering::Relaxed) {
         let now = Instant::now();
         // Logs first, so a panic message prints before the halt it causes.
         if let Some(logs) = &mut state.logs
@@ -232,26 +324,59 @@ pub fn run(target: &Target, elf: Option<ElfInfo>, options: Options) -> Result<()
         std::io::stdout().flush()?;
 
         let timeout = wake.saturating_duration_since(Instant::now());
-        if !input_open {
-            std::thread::sleep(timeout);
-            continue;
-        }
-        match input.recv_timeout(timeout) {
-            Ok(line) => {
-                let line = line?;
-                match handle(target, &mut state, &line) {
-                    Ok(true) => break,
-                    Ok(false) => {}
-                    Err(e) => println!("error: {e:#}"),
+        let (sink, words) = match input.recv_timeout(timeout) {
+            Ok(Input::Stdin(line)) => match shlex::split(&line) {
+                Some(words) if words.is_empty() => continue,
+                Some(words) => (Sink::Stdout, words),
+                None => {
+                    println!("error: unbalanced quotes");
+                    continue;
                 }
-                // Report a halt or resume the command caused before anything else.
-                next_status = Instant::now();
+            },
+            Ok(Input::Connected(id, stream)) => {
+                let _ = stream.set_write_timeout(Some(CLIENT_WRITE_TIMEOUT));
+                state.clients.insert(id, stream);
+                continue;
             }
-            Err(RecvTimeoutError::Timeout) => {}
-            // Logs keep streaming without input, as `cargo run` with no terminal needs.
-            Err(RecvTimeoutError::Disconnected) if state.logs.is_some() => input_open = false,
+            Ok(Input::Request(id, line)) => match serde_json::from_str::<Request>(&line) {
+                Ok(request) => (Sink::Client(id), request.args),
+                Err(e) => {
+                    state.finish(
+                        Sink::Client(id),
+                        String::new(),
+                        Some(format!("bad request: {e}")),
+                    );
+                    continue;
+                }
+            },
+            Ok(Input::Disconnected(id)) => {
+                state.drop_client(id);
+                continue;
+            }
+            Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => break,
+        };
+        let mut output = String::new();
+        match handle(target, &mut state, sink, words, &mut output) {
+            Ok(Outcome::Done) => state.finish(sink, output, None),
+            Ok(Outcome::Watching) => match sink {
+                Sink::Stdout => print!("{output}"),
+                Sink::Client(id) => state.send(
+                    id,
+                    &Response {
+                        output: Some(output),
+                        ..Response::default()
+                    },
+                ),
+            },
+            Ok(Outcome::Quit) => {
+                state.finish(sink, output, None);
+                break 'session;
+            }
+            Err(e) => state.finish(sink, output, Some(format!("{e:#}"))),
         }
+        // Report a halt or resume the command caused before anything else.
+        next_status = Instant::now();
     }
     // Detaching leaves a halted core halted. Clear the breakpoints first, including
     // GDB's, or the core can stop at one again before probe-rs clears them.
@@ -264,24 +389,50 @@ pub fn run(target: &Target, elf: Option<ElfInfo>, options: Options) -> Result<()
     Ok(())
 }
 
-/// Run one input line. Returns whether the session should end.
-fn handle(target: &Target, state: &mut State, line: &str) -> Result<bool> {
-    let words = shlex::split(line).ok_or_else(|| anyhow!("unbalanced quotes"))?;
-    if words.is_empty() {
-        return Ok(false);
+/// Accept clients and forward their requests, one line each.
+fn accept(listener: std::os::unix::net::UnixListener, sender: Sender<Input>) {
+    for (id, stream) in (1..).zip(listener.incoming()) {
+        let Ok(stream) = stream else { continue };
+        let Ok(writer) = stream.try_clone() else {
+            continue;
+        };
+        if sender.send(Input::Connected(id, writer)).is_err() {
+            return;
+        }
+        let sender = sender.clone();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stream).lines().map_while(Result::ok) {
+                if sender.send(Input::Request(id, line)).is_err() {
+                    return;
+                }
+            }
+            let _ = sender.send(Input::Disconnected(id));
+        });
     }
+}
+
+/// Run one command and write its output to `out`.
+fn handle(
+    target: &Target,
+    state: &mut State,
+    sink: Sink,
+    words: Vec<String>,
+    out: &mut String,
+) -> Result<Outcome> {
     let command = match Line::try_parse_from(words) {
         Ok(line) => line.command,
         Err(e) => {
-            // Help and parse errors both go to stdout, so a client reads one stream.
             // The usage hint names a binary and `--help`, which mean nothing here.
             let text = e.render().to_string();
             let text = text
                 .split("\n\nFor more information")
                 .next()
                 .unwrap_or_default();
-            println!("{}", text.trim_end());
-            return Ok(false);
+            if e.use_stderr() {
+                bail!("{}", text.trim_end().trim_start_matches("error: "));
+            }
+            writeln!(out, "{}", text.trim_end())?;
+            return Ok(Outcome::Done);
         }
     };
     let mut session = target.session.lock();
@@ -292,15 +443,29 @@ fn handle(target: &Target, state: &mut State, line: &str) -> Result<bool> {
             }
             flash::reset(&mut session, halt)?;
             state.status = None;
-            return Ok(false);
+            writeln!(out, "{}", if halt { "reset and halted" } else { "reset" })?;
+            return Ok(Outcome::Done);
         }
-        SessionCommand::Flash { verify } => {
-            let path = state
-                .elf_path
-                .clone()
+        SessionCommand::Flash {
+            elf,
+            verify,
+            chip_erase,
+            halt,
+        } => {
+            let path = elf
+                .or_else(|| state.elf_path.clone())
                 .ok_or_else(|| anyhow!("flash needs an ELF"))?;
-            reflash(target, &mut session, state, &path, verify)?;
-            return Ok(false);
+            reflash(
+                target,
+                &mut session,
+                state,
+                &path,
+                verify,
+                chip_erase,
+                halt,
+                out,
+            )?;
+            return Ok(Outcome::Done);
         }
         _ => {}
     }
@@ -311,7 +476,7 @@ fn handle(target: &Target, state: &mut State, line: &str) -> Result<bool> {
             let mut memory = target.memory(&mut session)?;
             for location in &locations {
                 let location = path::locate(elf, &mut memory, location)?;
-                print!("{}", crate::read(elf, &mut memory, &location)?);
+                *out += &crate::read(elf, &mut memory, &location)?;
             }
         }
         SessionCommand::Watch {
@@ -327,103 +492,124 @@ fn handle(target: &Target, state: &mut State, line: &str) -> Result<bool> {
             state.next_watch += 1;
             let watch = Watch {
                 id: state.next_watch,
+                sink,
                 texts: locations,
                 locations: resolved,
                 interval: Duration::from_millis(interval.max(1)),
                 next: Instant::now(),
                 remaining: count,
             };
-            println!(
-                "watch {}: {} every {} ms",
-                watch.id,
-                watch.texts.join(" "),
-                watch.interval.as_millis()
-            );
+            describe_watch(out, &watch)?;
             state.watches.push(watch);
+            return Ok(Outcome::Watching);
         }
         SessionCommand::Unwatch { ids } => {
             if let Some(id) = ids
                 .iter()
                 .find(|id| !state.watches.iter().any(|w| w.id == **id))
             {
-                return Err(anyhow!("no watch {id}"));
+                bail!("no watch {id}");
             }
-            state.watches.retain(|w| {
-                let keep = !ids.is_empty() && !ids.contains(&w.id);
-                if !keep {
-                    println!("watch {} stopped", w.id);
+            let (gone, kept) = std::mem::take(&mut state.watches)
+                .into_iter()
+                .partition::<Vec<_>, _>(|w| ids.is_empty() || ids.contains(&w.id));
+            state.watches = kept;
+            for watch in gone {
+                writeln!(out, "watch {} stopped", watch.id)?;
+                if let Sink::Client(id) = watch.sink
+                    && watch.sink != sink
+                {
+                    state.finish(Sink::Client(id), String::new(), Some("unwatched".into()));
                 }
-                keep
-            });
+            }
         }
         SessionCommand::Set { location, value } => {
             let mut memory = target.memory(&mut session)?;
             let location = path::locate(elf, &mut memory, &location)?;
             crate::set(elf, &mut memory, &location, &value)?;
-            print!("{}", crate::read(elf, &mut memory, &location)?);
+            *out += &crate::read(elf, &mut memory, &location)?;
         }
-        SessionCommand::Halt => debug::halt(&mut session)?,
+        SessionCommand::Halt => {
+            debug::halt(&mut session)?;
+            let status = debug::status(&mut session)?;
+            writeln!(out, "{}", describe(state, &mut session, status)?)?;
+        }
         SessionCommand::Resume => {
             debug::resume(&mut session)?;
             // The core may halt at a breakpoint again before the next poll, which would
             // otherwise look like no change.
             state.status = Some(CoreStatus::Running);
-            println!("running");
+            writeln!(out, "running")?;
+            if sink != Sink::Stdout {
+                println!("running");
+            }
         }
         SessionCommand::Step => {
             debug::step(&mut session)?;
             // A step leaves the core halted, so the status does not change; print it here.
             let status = debug::status(&mut session)?;
             state.status = Some(status);
-            let text = debug::describe_status(elf, &mut session, &state.breakpoints, status)?;
-            println!("{text}");
+            writeln!(out, "{}", describe(state, &mut session, status)?)?;
         }
         SessionCommand::Break { target: text } => {
             let breakpoint = state.breakpoints.add(elf, &mut session, &text)?;
-            println!("breakpoint {} at {}", breakpoint.id, breakpoint.label);
+            writeln!(out, "breakpoint {} at {}", breakpoint.id, breakpoint.label)?;
         }
         SessionCommand::Delete { ids } => {
             for breakpoint in state.breakpoints.delete(&mut session, &ids)? {
-                println!("breakpoint {} cleared", breakpoint.id);
+                writeln!(out, "breakpoint {} cleared", breakpoint.id)?;
             }
         }
         SessionCommand::Status => {
             let status = debug::status(&mut session)?;
-            println!(
-                "{}",
-                debug::describe_status(elf, &mut session, &state.breakpoints, status)?
-            );
+            writeln!(out, "{}", describe(state, &mut session, status)?)?;
             for breakpoint in state.breakpoints.iter() {
-                println!("breakpoint {} at {}", breakpoint.id, breakpoint.label);
+                writeln!(out, "breakpoint {} at {}", breakpoint.id, breakpoint.label)?;
             }
             for watch in &state.watches {
-                println!(
-                    "watch {}: {} every {} ms",
-                    watch.id,
-                    watch.texts.join(" "),
-                    watch.interval.as_millis()
-                );
+                describe_watch(out, watch)?;
             }
         }
-        SessionCommand::Quit => return Ok(true),
+        SessionCommand::Quit if sink == Sink::Stdout => return Ok(Outcome::Quit),
+        SessionCommand::Quit => bail!("only the terminal running the session can end it"),
     }
-    Ok(false)
+    Ok(Outcome::Done)
 }
 
-/// Print the core status when it changes.
+fn describe(state: &State, session: &mut Session, status: CoreStatus) -> Result<String> {
+    debug::describe_status(state.elf.as_ref(), session, &state.breakpoints, status)
+}
+
+fn describe_watch(out: &mut String, watch: &Watch) -> Result<()> {
+    writeln!(
+        out,
+        "watch {}: {} every {} ms",
+        watch.id,
+        watch.texts.join(" "),
+        watch.interval.as_millis()
+    )?;
+    Ok(())
+}
+
+/// Print the core status when it changes. Logs written before the change, such as
+/// a panic message before the HardFault it causes, print first.
 fn report_status(target: &Target, state: &mut State) -> Result<()> {
     let mut session = target.session.lock();
     let status = debug::status(&mut session)?;
     if state.status != Some(status) {
         state.status = Some(status);
-        let text =
-            debug::describe_status(state.elf.as_ref(), &mut session, &state.breakpoints, status)?;
-        println!("{text}");
+        if let Some(logs) = &mut state.logs {
+            match logs.poll(&mut session) {
+                Ok(text) => print!("{text}"),
+                Err(e) => println!("error: could not read RTT: {e:#}"),
+            }
+        }
+        println!("{}", describe(state, &mut session, status)?);
     }
     Ok(())
 }
 
-/// Print every due watch. A watch that fails prints the error and stops.
+/// Print every due watch. A watch that fails reports the error and stops.
 fn run_watches(target: &Target, state: &mut State) {
     let now = Instant::now();
     if !state.watches.iter().any(|w| w.next <= now) {
@@ -439,6 +625,8 @@ fn run_watches(target: &Target, state: &mut State) {
             return;
         }
     };
+    // Output per watch, and the result of each watch that ended
+    let mut sent = Vec::new();
     state.watches.retain_mut(|watch| {
         if watch.next > now {
             return true;
@@ -450,13 +638,17 @@ fn run_watches(target: &Target, state: &mut State) {
                 let location = crate::refresh(elf, &mut memory, location)?;
                 Ok::<_, anyhow::Error>(text + &crate::read(elf, &mut memory, &location)?)
             });
-        match text {
-            Ok(text) => print!("--- watch {}, {elapsed:.3} s\n{text}", watch.id),
+        let text = match text {
+            Ok(text) => format!("--- watch {}, {elapsed:.3} s\n{text}", watch.id),
             Err(e) => {
-                println!("error: watch {} stopped: {e:#}", watch.id);
+                sent.push((
+                    watch.sink,
+                    String::new(),
+                    Some(Some(format!("watch {} stopped: {e:#}", watch.id))),
+                ));
                 return false;
             }
-        }
+        };
         // Keep to the schedule; after a slow read, skip the reads it overran.
         watch.next += watch.interval;
         while watch.next <= now {
@@ -464,42 +656,65 @@ fn run_watches(target: &Target, state: &mut State) {
         }
         watch.remaining = watch.remaining.map(|n| n - 1);
         if watch.remaining == Some(0) {
-            println!("watch {} done", watch.id);
+            sent.push((
+                watch.sink,
+                format!("{text}watch {} done\n", watch.id),
+                Some(None),
+            ));
             return false;
         }
+        sent.push((watch.sink, text, None));
         true
     });
+    drop(memory);
+    drop(session);
+    for (sink, text, ended) in sent {
+        match (sink, ended) {
+            (_, Some(error)) => state.finish(sink, text, error),
+            (Sink::Stdout, None) => print!("{text}"),
+            (Sink::Client(id), None) => state.send(
+                id,
+                &Response {
+                    output: Some(text),
+                    ..Response::default()
+                },
+            ),
+        }
+    }
 }
 
-/// Program `path`, reload its symbols and logs, and reset. Breakpoints are cleared,
+/// Program `file`, reload its symbols and logs, and reset. Breakpoints are cleared,
 /// since the functions may have moved, and watches are resolved again.
+#[allow(clippy::too_many_arguments)]
 fn reflash(
     target: &Target,
-    session: &mut probe_rs::Session,
+    session: &mut Session,
     state: &mut State,
-    file: &std::path::Path,
+    file: &Path,
     verify: bool,
+    chip_erase: bool,
+    halt: bool,
+    out: &mut String,
 ) -> Result<()> {
     let elf =
         ElfParser::parse(file).with_context(|| format!("could not parse {}", file.display()))?;
-    let logs = if state.logs.is_some() {
-        Logs::new(file)?
-    } else {
-        None
-    };
+    let logs = Logs::new(file)?;
     for breakpoint in state.breakpoints.delete(session, &[])? {
-        println!("breakpoint {} cleared", breakpoint.id);
+        writeln!(out, "breakpoint {} cleared", breakpoint.id)?;
     }
-    flash::flash(session, file, verify, false)?;
+    flash::flash(session, file, verify, chip_erase)?;
+    writeln!(out, "flashed {}", file.display())?;
+    state.elf_path = Some(file.to_path_buf());
     state.elf = Some(elf);
     state.logs = logs;
     if let Some(logs) = &mut state.logs {
         logs.restart(session)?;
     }
-    flash::reset(session, false)?;
+    flash::reset(session, halt)?;
     state.status = None;
     let mut memory = target.memory(session)?;
     let elf = state.elf.as_ref();
+    let mut stopped = Vec::new();
     state.watches.retain_mut(|watch| {
         let located = watch
             .texts
@@ -512,11 +727,15 @@ fn reflash(
                 true
             }
             Err(e) => {
-                println!("error: watch {} stopped: {e:#}", watch.id);
+                stopped.push((watch.sink, format!("watch {} stopped: {e:#}", watch.id)));
                 false
             }
         }
     });
+    drop(memory);
+    for (sink, error) in stopped {
+        state.finish(sink, String::new(), Some(error));
+    }
     Ok(())
 }
 

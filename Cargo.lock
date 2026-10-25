@@ -1704,6 +1704,8 @@ dependencies = [
  "parking_lot",
  "probe-rs",
  "probe-rs-target",
+ "serde",
+ "serde_json",
  "shlex 1.3.0",
  "tracing",
  "tuning-studio-dwarf",

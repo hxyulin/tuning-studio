@@ -15,10 +15,13 @@ use probe_rs::{Permissions, Session};
 use probe_rs_target::{ApAddress, CoreAccessOptions, MemoryRegion};
 use std::ops::Range;
 
+use crate::daemon;
 use crate::memory::Memory;
 
 pub struct Target {
     pub session: FairMutex<Session>,
+    /// The probe, as `daemon::probe_id` names it
+    pub probe_id: String,
     ap: FullyQualifiedApAddress,
     /// Flash, where a bus write has no effect
     nvm: Vec<Range<u64>>,
@@ -34,18 +37,29 @@ impl Target {
         speed_khz: u32,
         erase_all: bool,
     ) -> Result<Self> {
-        let lister = Lister::new();
-        let mut probe = match probe {
-            Some(selector) => {
-                let selector: DebugProbeSelector = selector.parse()?;
-                lister.open(selector)?
+        let probes = Lister::new().list_all();
+        let info = match probe {
+            Some(text) => {
+                let selector: DebugProbeSelector = text.parse()?;
+                probes
+                    .into_iter()
+                    .find(|info| selector.matches_probe(info))
+                    .ok_or_else(|| anyhow!("no probe {text} is connected"))?
             }
-            None => match lister.list_all().as_slice() {
-                [only] => only.open()?,
-                [] => bail!("no debug probe found"),
-                probes => bail!("{} probes connected; pick one with --probe", probes.len()),
+            None => match <[_; 1]>::try_from(probes) {
+                Ok([only]) => only,
+                Err(probes) if probes.is_empty() => bail!("no debug probe found"),
+                Err(probes) => {
+                    bail!("{} probes connected; pick one with --probe", probes.len())
+                }
             },
         };
+        let probe_id = daemon::probe_id(
+            info.vendor_id,
+            info.product_id,
+            info.serial_number.as_deref(),
+        );
+        let mut probe = info.open()?;
         probe.set_speed(speed_khz)?;
         let permissions = if erase_all {
             Permissions::new().allow_erase_all()
@@ -65,6 +79,7 @@ impl Target {
             .collect();
         Ok(Self {
             session: FairMutex::new(session),
+            probe_id,
             ap,
             nvm,
         })
