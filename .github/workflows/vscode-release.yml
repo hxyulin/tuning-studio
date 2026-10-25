@@ -43,6 +43,8 @@ jobs:
         run: node -e 'const p=require("./vscode/package.json"); if(p.version!==process.env.RELEASE_VERSION) throw new Error("Extension version differs from requested release")'
       - run: npm ci
       - run: npm test
+      # Fills crates/studio-server/frontend, which the server embeds
+      - run: npm run build
       - run: npm run build:webview
       - run: npm --prefix vscode ci
       - run: npm --prefix vscode run typecheck
