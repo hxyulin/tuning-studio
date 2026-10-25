@@ -15,6 +15,7 @@
 
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
+use core::ops::RangeInclusive;
 use core::sync::atomic::{AtomicU8, AtomicU32, Ordering, fence};
 
 /// Copy `value` into a static named `name` for the host to read.
@@ -26,13 +27,18 @@ use core::sync::atomic::{AtomicU8, AtomicU32, Ordering, fence};
 /// # }
 /// ```
 ///
+/// `section = ".uncached"` places the static in that linker section, which the
+/// board's linker script must define. The section must be zeroed at
+/// boot; otherwise the host can show leftover bytes until the first write.
+///
 /// The name is the static's symbol, so it must be unique in the firmware. A
 /// repeated name fails to link. Each use is one static: a function called from
 /// several tasks shares it, and the last call wins. The value's type cannot
 /// depend on a generic parameter.
 #[macro_export]
 macro_rules! watch {
-    ($name:literal: $type:ty = $value:expr) => {{
+    ($name:literal: $type:ty = $value:expr $(, section = $section:literal)?) => {{
+        $(#[unsafe(link_section = $section)])?
         #[unsafe(export_name = $name)]
         static WATCH: $crate::Watch<$type> = $crate::Watch::new();
         WATCH.set($value);
@@ -103,12 +109,35 @@ pub mod reply {
     pub const REFUSED: u8 = 3;
 }
 
+/// Declare several [`Param`]s. Each option after the default calls the builder
+/// method of that name, and attributes such as doc comments or `link_section`
+/// pass through.
+///
+/// ```
+/// tuning_studio_api::params! {
+///     /// Target speed
+///     pub static SETPOINT: f32 = 100.0, range = -300.0..=300.0, max_step = 1.0, unit = "rad/s";
+///     static KP: f32 = 0.02, range = 0.0..=1.0, max_step = 0.01;
+///     static ENABLE: bool = true;
+/// }
+/// ```
+#[macro_export]
+macro_rules! params {
+    ($(
+        $(#[$attr:meta])*
+        $vis:vis static $name:ident: $type:ty = $default:expr $(, $option:ident = $value:expr)*;
+    )*) => {$(
+        $(#[$attr])*
+        $vis static $name: $crate::Param<$type> = $crate::Param::new($default) $(.$option($value))*;
+    )*};
+}
+
 /// A parameter the host can ask to change.
 ///
 /// ```
 /// use tuning_studio_api::Param;
 ///
-/// static YAW_KP: Param<f32> = Param::new(1.2).range(0.0, 10.0).max_step(0.1).unit("1/s");
+/// static YAW_KP: Param<f32> = Param::new(1.2).range(0.0..=10.0).max_step(0.1).unit("1/s");
 ///
 /// fn control_tick() {
 ///     let kp = YAW_KP.get();
@@ -165,9 +194,10 @@ impl<T: Value> Param<T> {
         }
     }
 
-    /// Clamp requests to `min..=max`.
+    /// Clamp requests to the range.
     #[must_use]
-    pub const fn range(mut self, min: T, max: T) -> Self {
+    pub const fn range(mut self, range: RangeInclusive<T>) -> Self {
+        let (min, max) = (*range.start(), *range.end());
         self.min = min;
         self.max = max;
         self
@@ -354,7 +384,7 @@ mod tests {
 
     #[test]
     fn applies_requests_in_get_within_range_and_step() {
-        let kp = Param::new(1.0f32).range(0.0, 10.0).max_step(0.5);
+        let kp = Param::new(1.0f32).range(0.0..=10.0).max_step(0.5);
         assert_eq!(kp.get(), 1.0);
         assert_eq!(reply(&kp), (0, reply::NONE));
 
@@ -382,7 +412,7 @@ mod tests {
 
     #[test]
     fn integers_and_bools() {
-        let offset = Param::new(0i16).range(-100, 100).max_step(30);
+        let offset = Param::new(0i16).range(-100..=100).max_step(30);
         request(&offset, (-50i16) as u16 as u32);
         assert_eq!(offset.get(), -30);
         assert_eq!(offset.get(), -50);

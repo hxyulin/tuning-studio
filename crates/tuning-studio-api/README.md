@@ -52,14 +52,14 @@ tuning-studio-api = { path = "../tuning-tools/crates/tuning-studio-api" }
 ```
 
 ```rust
-use tuning_studio_api::{Param, watch};
+use tuning_studio_api::{params, watch};
 
-static SETPOINT: Param<f32> = Param::new(100.0)
-    .range(-300.0, 300.0)
-    .max_step(1.0)
-    .unit("rad/s");
-static KP: Param<f32> = Param::new(0.02).range(0.0, 1.0).max_step(0.01);
-static ENABLE: Param<bool> = Param::new(true);
+params! {
+    /// Target speed
+    static SETPOINT: f32 = 100.0, range = -300.0..=300.0, max_step = 1.0, unit = "rad/s";
+    static KP: f32 = 0.02, range = 0.0..=1.0, max_step = 0.01;
+    static ENABLE: bool = true;
+}
 
 fn control(speed: f32) -> f32 {
     let error = SETPOINT.get() - speed;
@@ -68,12 +68,19 @@ fn control(speed: f32) -> f32 {
 }
 ```
 
+Each option after the default calls the `Param` builder method of that name,
+so a single parameter can also be written as
+`static KP: Param<f32> = Param::new(0.02).range(0.0..=1.0).max_step(0.01);`.
+Doc comments and other attributes pass through.
+
 Call `get` once per control tick. Each call applies a pending request and
 moves the value one step. A `Param` holds `f32`, `bool`, or an integer up to 32
 bits, so the host can read it in one access.
 
 `watch!` takes a name, the type, and the value. The name becomes the static's
-symbol, so it must be unique, and a repeated name fails to link. A `watch!`
+symbol, so it must be unique, and a repeated name fails to link. A trailing
+`section = ".name"` puts the static in that linker section; the section must be
+zeroed at boot. A `watch!`
 value can be any `Copy` type, including structs. Two counters around it let
 the host detect a read that overlapped a write and retry it. Each use of the
 macro is one static, so a function called from several tasks shares it, and

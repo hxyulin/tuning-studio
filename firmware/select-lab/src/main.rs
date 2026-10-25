@@ -8,8 +8,8 @@
 //! `value` is always `f(phase)` with `phase = count % 1024 * 2π / 1024`, so a
 //! host can check any read of the pair.
 //!
-//! It runs from the reset 64 MHz HSI clock with data in DTCM, the instruction
-//! cache on and the data cache off.
+//! It runs from the reset 64 MHz HSI clock with data in DTCM and the instruction
+//! cache on.
 #![no_std]
 #![no_main]
 
@@ -17,13 +17,15 @@ use core::f32::consts::TAU;
 use embassy_executor::Spawner;
 use embassy_futures::select::select;
 use embassy_futures::yield_now;
-use tuning_studio_api::{Param, watch};
+use tuning_studio_api::{params, watch};
 
-/// Extra cycles each future spins per iteration, to slow the switching down.
-/// The futures read both parameters once per 1024 iterations.
-static SPIN: Param<u32> = Param::new(0).unit("cycles");
-/// Publish the `watch!` values every this many iterations
-static WATCH_EVERY: Param<u32> = Param::new(1).range(1, u32::MAX);
+params! {
+    /// Extra cycles each future spins per iteration, to slow the switching down.
+    /// The futures read both parameters once per 1024 iterations.
+    static SPIN: u32 = 0, unit = "cycles";
+    /// Publish the `watch!` values every this many iterations
+    static WATCH_EVERY: u32 = 1, range = 1..=u32::MAX;
+}
 
 const STEPS: u32 = 1024;
 
@@ -124,7 +126,7 @@ async fn main(spawner: Spawner) {
         *value = libm::sinf(phase(i as u32));
     }
     // Without the instruction cache, each fetch from flash waits the reset default
-    // of 7 cycles. The data cache stays off, so the probe still reads live values.
+    // of 7 cycles.
     // SAFETY: nothing else uses the SCB.
     unsafe { cortex_m::Peripherals::steal() }
         .SCB

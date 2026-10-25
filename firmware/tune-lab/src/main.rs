@@ -9,19 +9,18 @@
 
 use cortex_m::peripheral::syst::SystClkSource;
 use cortex_m_rt::{entry, exception};
-use tuning_studio_api::{Param, watch};
+use tuning_studio_api::{params, watch};
 
-/// Target speed
-static SETPOINT: Param<f32> = Param::new(100.0)
-    .range(-300.0, 300.0)
-    .max_step(1.0)
-    .unit("rad/s");
-static KP: Param<f32> = Param::new(0.02).range(0.0, 1.0).max_step(0.01);
-static KI: Param<f32> = Param::new(0.5).range(0.0, 10.0).max_step(0.1);
-/// Whether the controller drives the motor; off, the output is 0
-static ENABLE: Param<bool> = Param::new(true);
-/// Largest output, in percent
-static OUTPUT_LIMIT: Param<u8> = Param::new(100).range(0, 100).max_step(5).unit("%");
+params! {
+    /// Target speed
+    static SETPOINT: f32 = 100.0, range = -300.0..=300.0, max_step = 1.0, unit = "rad/s";
+    static KP: f32 = 0.02, range = 0.0..=1.0, max_step = 0.01;
+    static KI: f32 = 0.5, range = 0.0..=10.0, max_step = 0.1;
+    /// Whether the controller drives the motor; off, the output is 0
+    static ENABLE: bool = true;
+    /// Largest output, in percent
+    static OUTPUT_LIMIT: u8 = 100, range = 0..=100, max_step = 5, unit = "%";
+}
 
 /// Speed per unit of output, rad/s
 const GAIN: f32 = 300.0;

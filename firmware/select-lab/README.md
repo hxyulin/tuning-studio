@@ -85,3 +85,10 @@ locations ran at 47 reads per second.
 
 The 10 MHz results need `--speed 10000`, since the default is 4000 kHz. This
 probe was no faster at 24 MHz.
+
+**The data cache does not change this.** A build with the data in AXI SRAM and
+the D-cache on (CCR bit 16 set, MPU off, so the region was write-back cached)
+read the same as DTCM: every `watch!` sample was consistent and current, and
+every `Param` request reached the firmware without cache maintenance. The
+CLI's AP reaches memory through the Cortex-M7's debug port, which goes through
+the cache.
