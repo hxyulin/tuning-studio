@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
-# Standalone: not part of the tuning-tools workspace.
+# Standalone: not part of the tuning-studio workspace.
 [workspace]
 
 [dependencies]

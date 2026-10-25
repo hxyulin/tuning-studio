@@ -1,4 +1,4 @@
-//! ELF symbol and DWARF type inspection for tuning-tools.
+//! ELF symbol and DWARF type inspection for Tuning Studio.
 //!
 //! Ported from `datavis-rs` (MIT, `src/backend/{elf_parser,dwarf_parser,type_table}.rs`
 //! at `cb4c641`). The parser and type table are kept as they were; the ELF layer
