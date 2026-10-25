@@ -7,10 +7,12 @@
     "dev": "vite",
     "test": "node --test tests/*.test.ts",
     "build": "tsc && vite build && node scripts/prepare-frontend.mjs",
-    "build:webview": "tsc && vite build --mode webview",
+    "build:webview": "tsc && tsc -p tsconfig.ui.json && vite build --config ui/vscode/vite.config.ts",
     "preview": "vite preview",
     "tauri": "tauri",
-    "typecheck": "tsc --noEmit -p . && tsc --noEmit -p tsconfig.test.json"
+    "typecheck": "tsc --noEmit -p . && tsc --noEmit -p tsconfig.test.json && tsc --noEmit -p tsconfig.ui.json",
+    "mockup": "vite --config mockup/vite.config.ts",
+    "dev:vscode": "vite --config ui/vscode/vite.config.ts --mode mock"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
@@ -28,6 +30,7 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
+    "preact": "^11.0.2",
     "tailwindcss": "^4.3.3",
     "typescript": "~7.0.2",
     "vite": "^8.3.5"

@@ -1,0 +1,160 @@
+/* The editor's theme: VS Code defines --vscode-* on the webview, and marks light themes with a
+   class the host turns into data-theme. Series colours are stepped separately for each. */
+:root {
+  --surface: var(--vscode-editor-background, #1f1f1f);
+  --panel: var(--vscode-sideBar-background, #181818);
+  --sunken: var(--vscode-list-hoverBackground, #2a2d2e);
+  --rule: var(--vscode-panel-border, #2b2b2b);
+  --grid: var(--vscode-editorIndentGuide-background1, #2a2a2a);
+  --ink: var(--vscode-foreground, #cccccc);
+  --muted: var(--vscode-descriptionForeground, #9d9d9d);
+  --accent: var(--vscode-focusBorder, #0078d4);
+  --button: var(--vscode-button-background, #0078d4);
+  --button-ink: var(--vscode-button-foreground, #ffffff);
+  --input: var(--vscode-input-background, #313131);
+  --good: var(--vscode-testing-iconPassed, #73c991);
+  --danger: var(--vscode-errorForeground, #f48771);
+  --text-value: var(--vscode-debugTokenExpression-value, #ce9178);
+  --text-enum: var(--vscode-debugTokenExpression-name, #4fc1ff);
+  --ui: var(--vscode-font-family, system-ui, -apple-system, "Segoe UI", sans-serif);
+  --mono: var(--vscode-editor-font-family, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+  color-scheme: dark;
+}
+:root[data-theme="light"] {
+  --surface: var(--vscode-editor-background, #ffffff);
+  --panel: var(--vscode-sideBar-background, #f8f8f8);
+  --sunken: var(--vscode-list-hoverBackground, #f0f0f0);
+  --rule: var(--vscode-panel-border, #e5e5e5);
+  --grid: var(--vscode-editorIndentGuide-background1, #efefef);
+  --ink: var(--vscode-foreground, #3b3b3b);
+  --muted: var(--vscode-descriptionForeground, #717171);
+  --input: var(--vscode-input-background, #ffffff);
+  --good: var(--vscode-testing-iconPassed, #388a34);
+  --danger: var(--vscode-errorForeground, #a1260d);
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #6250d6;
+  --series-8: #e34948;
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; padding: 0; }
+body {
+  background: var(--surface);
+  color: var(--ink);
+  font: 13px/1.4 var(--ui);
+}
+button, input { font: inherit; color: inherit; }
+button {
+  border: 1px solid var(--rule);
+  background: transparent;
+  border-radius: 2px;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+button:hover:not(:disabled) { background: var(--sunken); }
+button:disabled { opacity: 0.45; cursor: default; }
+button:focus-visible, input:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+button.primary { border-color: var(--button); background: var(--button); color: var(--button-ink); }
+button.primary:hover:not(:disabled) { background: var(--vscode-button-hoverBackground, var(--button)); }
+button.ghost { border-color: transparent; padding: 0 6px; color: var(--muted); }
+button.link { border: 0; padding: 0; color: var(--vscode-textLink-foreground, var(--accent)); background: none; }
+button[aria-pressed="true"] { background: var(--sunken); }
+
+.app { display: flex; flex-direction: column; height: 100%; }
+.grow { flex: 1; }
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--rule);
+}
+.firmware { font-family: var(--mono); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.target { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); white-space: nowrap; }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot.on { background: var(--good); }
+.dot.bad { background: var(--danger); }
+.segmented { display: inline-flex; border: 1px solid var(--rule); border-radius: 2px; padding: 1px; }
+.segmented button { border: 0; padding: 1px 8px; color: var(--muted); }
+.segmented button[aria-checked="true"] { background: var(--sunken); color: var(--ink); }
+.recording { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); }
+.rec { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); }
+
+.banner { display: flex; align-items: center; gap: 8px; padding: 4px 10px; border-bottom: 1px solid var(--rule); background: var(--panel); }
+.banner.danger { color: var(--danger); }
+
+.split { display: grid; grid-template-columns: var(--side) 5px minmax(0, 1fr); flex: 1; min-height: 0; }
+.divider { cursor: col-resize; border-left: 1px solid var(--rule); }
+.divider:hover { background: color-mix(in srgb, var(--accent) 40%, transparent); }
+main.empty { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--muted); }
+
+/* Live Watch */
+.watch { display: flex; flex-direction: column; min-height: 0; min-width: 0; background: var(--panel); }
+.filter {
+  margin: 8px;
+  padding: 3px 6px;
+  border: 1px solid var(--vscode-input-border, var(--rule));
+  border-radius: 2px;
+  background: var(--input);
+}
+.watch-error { margin: 0 8px 6px; color: var(--danger); font-size: 12px; }
+.rows { flex: 1; overflow: auto; padding-bottom: 8px; }
+.row { display: flex; align-items: center; gap: 6px; height: 22px; padding-right: 6px; white-space: nowrap; cursor: default; }
+.row:hover { background: var(--sunken); }
+.row[aria-expanded] { cursor: pointer; }
+.row.note { color: var(--muted); font-size: 12px; }
+.chevron { width: 10px; flex: none; color: var(--muted); font-size: 10px; }
+.name { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; }
+.type { color: var(--muted); font-family: var(--mono); font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
+.value { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+.value.text { color: var(--text-enum); }
+.value.failed { color: var(--danger); }
+.value.muted { color: var(--muted); }
+.value.writable { border-bottom: 1px dotted var(--muted); cursor: text; }
+.unit { color: var(--muted); margin-left: 4px; font-size: 11px; }
+.edit {
+  width: 96px;
+  padding: 0 4px;
+  text-align: right;
+  font-family: var(--mono);
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  background: var(--input);
+}
+.plot-slot { width: 16px; flex: none; display: inline-flex; justify-content: center; }
+.swatch { width: 12px; height: 12px; padding: 0; border: 1.5px solid var(--muted); border-radius: 3px; background: transparent; opacity: 0; }
+.row:hover .swatch, .swatch.on, .swatch:focus-visible { opacity: 1; }
+.swatch.on { border-color: var(--c); background: var(--c); }
+.swatch:hover:not(:disabled) { border-color: var(--ink); background: transparent; }
+.swatch.on:hover { background: var(--c); }
+
+/* Plot */
+.plot { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 4px 8px 6px 0; }
+.plot.empty { align-items: center; justify-content: center; color: var(--muted); }
+.lane { flex: 1; min-height: 0; position: relative; overflow: hidden; }
+.lane + .lane { border-top: 1px solid var(--rule); }
+.plot.paused .lane { cursor: crosshair; }
+
+.uplot { font-family: inherit; }
+.u-legend { font-size: 12px; text-align: left; padding-left: 64px; margin: 0; }
+.u-legend .u-series:first-child { display: none; }
+.u-legend th { font-weight: 400; font-family: var(--mono); }
+.u-legend td { font-family: var(--mono); font-variant-numeric: tabular-nums; min-width: 72px; }
+.u-legend .u-marker { width: 10px; height: 3px; border-radius: 2px; }
+.u-legend .u-series { padding: 2px 8px 0 0; }
+.u-select { background: color-mix(in srgb, var(--accent) 18%, transparent); }

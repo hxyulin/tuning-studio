@@ -22,3 +22,4 @@ src-tauri/frontend
 release-assets
 
 crates/studio-server/frontend
+/mockup/dist

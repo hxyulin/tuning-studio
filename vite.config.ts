@@ -6,20 +6,9 @@ import process from "node:process";
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
-export default defineConfig(({ mode }) => ({
+// The VS Code page builds from ui/vscode/vite.config.ts
+export default defineConfig(() => ({
   plugins: [react(), tailwindcss()],
-
-  // `vite build --mode webview`: the VS Code extension's page. Relative asset paths (the extension
-  // rewrites them to webview URIs) and one script, so a nonce covers all of it under the webview CSP.
-  ...(mode === "webview" && {
-    base: "./",
-    build: {
-      outDir: "vscode/media",
-      emptyOutDir: true,
-      modulePreload: false,
-      rollupOptions: { output: { codeSplitting: false } },
-    },
-  }),
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

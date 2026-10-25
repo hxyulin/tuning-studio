@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "jsxImportSource": "preact",
+    "types": ["vite/client"]
+  },
+  "include": ["ui", "mockup"],
+  "exclude": ["ui/**/vite.config.ts", "mockup/vite.config.ts"]
+}
