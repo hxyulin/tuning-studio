@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
-import { formatTick } from "../../src/live/format";
+import { formatTick, formatTicks } from "../../src/live/format";
 import { samples } from "../../src/live/samples";
 import { type Watch, watchName } from "../../src/live/useWatches";
 
@@ -94,7 +94,8 @@ function Lane({ unit, watches, last, theme }: { unit: string; watches: Watch[]; 
         scales: { x: { time: false, range: (_u, min, max) => (view.paused ? [min, max] : [view.from, view.to]) } },
         axes: [
           { ...axis, size: last ? 28 : 8, values: (_u, splits) => splits.map((v) => (last ? `${(v - view.to).toFixed(1)} s` : "")) },
-          { ...axis, size: 64, label: unit || undefined, labelSize: unit ? 16 : 0, labelFont: `11px ${css("--mono")}` },
+          // Large values as exponents, which fit the axis; uPlot's default groups digits and overflows
+          { ...axis, size: 64, label: unit || undefined, labelSize: unit ? 16 : 0, labelFont: `11px ${css("--mono")}`, values: (_u, splits, _i, _space, step) => formatTicks(splits, step) },
         ],
         series: [
           { label: "t", value: (_u, v) => (v == null ? "" : `${(v - view.to).toFixed(3)} s`) },

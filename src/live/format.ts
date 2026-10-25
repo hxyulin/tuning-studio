@@ -35,8 +35,11 @@ export function formatTicks(ticks: number[], step: number): string[] {
   // As many decimals as the step itself has: 0.25 needs two, 0.5 one
   let decimals = 0;
   while (decimals < 6 && Math.abs(Math.round(step * 10 ** decimals) - step * 10 ** decimals) > 1e-6) decimals++;
-  const big = ticks.some((t) => Math.abs(t) >= 1e6);
-  return ticks.map((t) => (big ? t.toExponential(1) : t.toFixed(decimals)));
+  const largest = Math.max(...ticks.map(Math.abs));
+  if (largest < 1e6) return ticks.map((t) => t.toFixed(decimals));
+  // Enough digits in the mantissa that neighbouring ticks differ: 4.78e+8, 4.79e+8
+  const digits = Math.min(6, Math.max(1, Math.floor(Math.log10(largest)) - Math.floor(Math.log10(step))));
+  return ticks.map((t) => t.toExponential(digits));
 }
 
 /** A float reading: fewer decimals as the magnitude grows */

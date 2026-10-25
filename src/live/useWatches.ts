@@ -43,8 +43,10 @@ let nextId = 1;
 
 /** A watch's short name, as the legend shows it: the path after its module */
 export function watchName(path: string): string {
-  const cut = path.lastIndexOf("::");
-  return cut < 0 ? path : path.slice(cut + 2);
+  // A task local, `app::control_task::POOL[task 0].future#3.pid`, reads as `control_task.pid`
+  const local = path.replace(/::POOL\[task (\d+)\]\.future#\d+/, (_, slot) => (slot === "0" ? "" : `[${slot}]`));
+  const cut = local.lastIndexOf("::");
+  return cut < 0 ? local : local.slice(cut + 2);
 }
 
 function assignTraces(watches: Watch[]): Watch[] {

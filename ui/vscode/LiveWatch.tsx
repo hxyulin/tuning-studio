@@ -22,11 +22,11 @@ type Loaded = { status: "loading" } | { status: "error"; message: string } | { s
 type Container = { path: string; ref: NodeRef };
 
 type Row =
-  | { type: "node"; node: SymbolNode; depth: number }
+  | { type: "node"; node: SymbolNode; depth: number; open: boolean }
   | { type: "more"; of: Container; depth: number; shown: number; total: number }
   | { type: "note"; key: string; depth: number; text: string }
   | { type: "group"; key: string; name: string; count: number }
-  | { type: "task"; task: Task; status: TaskStatus | undefined };
+  | { type: "task"; task: Task; status: TaskStatus | undefined; open: boolean };
 
 /** Statics under `<T as Trait>` or `<T>` group with T's crate */
 function crateOf(segment: string) {
@@ -120,11 +120,33 @@ export function LiveWatch(props: {
   };
 
   const needle = filter.trim().toLowerCase();
+  // The filter also finds members already loaded under a root or a task, and opens the way to them
+  const hitBelow = useMemo(() => {
+    const memo = new Map<string, boolean>();
+    const below = (path: string): boolean => {
+      const known = memo.get(path);
+      if (known !== undefined) return known;
+      memo.set(path, false);
+      const loaded = children.get(path);
+      const hit = loaded?.status === "ok" && loaded.nodes.some((n) => n.label.toLowerCase().includes(needle) || below(n.path));
+      memo.set(path, hit);
+      return hit;
+    };
+    return (path: string) => !!needle && below(path);
+  }, [children, needle]);
   const shownTasks = useMemo(
-    () => tasks.filter((t) => !needle || t.root.path.toLowerCase().includes(needle)).sort((a, b) => a.name.localeCompare(b.name) || a.slot - b.slot),
-    [tasks, needle],
+    () =>
+      tasks
+        .filter((t) => {
+          if (!needle || t.root.path.toLowerCase().includes(needle)) return true;
+          const state = heldState(statuses.get(t.root.path));
+          return !!state && hitBelow(state.path);
+        })
+        .sort((a, b) => a.name.localeCompare(b.name) || a.slot - b.slot),
+    [tasks, needle, statuses, hitBelow],
   );
   const tasksOpen = shownTasks.length > 0 && (!!needle || open.has(TASKS));
+  const pollTasks = tasks.length > 0 && (!!needle || open.has(TASKS));
 
   // Expanded nodes whose children are not loaded yet, such as after reconnecting, and the state an
   // open task is in now
@@ -143,7 +165,7 @@ export function LiveWatch(props: {
 
   useEffect(() => {
     setStatuses(new Map());
-    if (!live || !visible || !tasksOpen) return;
+    if (!live || !visible || !pollTasks) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
@@ -161,14 +183,14 @@ export function LiveWatch(props: {
       stopped = true;
       clearTimeout(timer);
     };
-  }, [live, visible, tasksOpen, tasks]);
+  }, [live, visible, pollTasks, tasks]);
 
   const crates = useMemo(() => {
     // Task pools show under Tasks
     const pools = new Set(tasks.map((t) => t.root.ref.symbol));
     const by = new Map<string, RootNode[]>();
     for (const r of roots) {
-      if (r.internal || pools.has(r.path) || (needle && !r.path.toLowerCase().includes(needle))) continue;
+      if (r.internal || pools.has(r.path) || (needle && !r.path.toLowerCase().includes(needle) && !hitBelow(r.path))) continue;
       const qualified = r.segments[0].startsWith("<");
       const crate = r.segments.length > 1 ? crateOf(r.segments[0]) : "";
       // Under its crate, a static reads as its module path: `gimbal::CONTROL`
@@ -176,20 +198,21 @@ export function LiveWatch(props: {
       by.set(crate, [...(by.get(crate) ?? []), { ...r, label }]);
     }
     return [...by].sort(([a], [b]) => a.localeCompare(b));
-  }, [roots, tasks, needle]);
+  }, [roots, tasks, needle, hitBelow]);
 
   const rows = useMemo(() => {
     const out: Row[] = [];
-    const expand = (of: Container, depth: number, parent: SymbolNode | null) => {
+    // `all`: an ancestor matched the filter, so every member shows
+    const expand = (of: Container, depth: number, parent: SymbolNode | null, all: boolean) => {
       const loaded = children.get(of.path);
       if (!loaded || loaded.status === "loading") out.push({ type: "note", key: `${of.path}/loading`, depth, text: "Loading…" });
       else if (loaded.status === "error") out.push({ type: "note", key: `${of.path}/error`, depth, text: loaded.message });
       else {
-        walk(loaded.nodes, depth, parent);
-        if (loaded.total > loaded.nodes.length) out.push({ type: "more", of, depth, shown: loaded.nodes.length, total: loaded.total });
+        walk(loaded.nodes, depth, parent, all, (n) => n.label);
+        if (all && loaded.total > loaded.nodes.length) out.push({ type: "more", of, depth, shown: loaded.nodes.length, total: loaded.total });
       }
     };
-    const walk = (nodes: SymbolNode[], depth: number, parent: SymbolNode | null) => {
+    const walk = (nodes: SymbolNode[], depth: number, parent: SymbolNode | null, all: boolean, name: (n: SymbolNode) => string) => {
       for (const original of nodes) {
         // A tagged enum shows only the variant it holds now
         if (parent?.kind === "taggedEnum") {
@@ -197,9 +220,13 @@ export function LiveWatch(props: {
           if (step?.kind === "discriminant") continue;
           if (step?.kind === "variant" && step.value !== values.get(parent.path)?.activeVariant) continue;
         }
+        const hit = all || !needle || name(original).toLowerCase().includes(needle);
+        const below = !all && hitBelow(original.path);
+        if (!hit && !below) continue;
         const node = tuningNode(original, catalog);
-        out.push({ type: "node", node, depth });
-        if (node.expandable && open.has(node.path)) expand(node, depth + 1, node);
+        const expanded = node.expandable && (below || open.has(node.path));
+        out.push({ type: "node", node, depth, open: expanded });
+        if (expanded) expand(node, depth + 1, node, hit);
       }
     };
     // Each task shows the locals of the state it is in now
@@ -208,10 +235,13 @@ export function LiveWatch(props: {
       if (tasksOpen)
         for (const task of shownTasks) {
           const status = statuses.get(task.root.path);
-          out.push({ type: "task", task, status });
-          if (!open.has(taskKey(task))) continue;
           const state = heldState(status);
-          if (state) expand(state, 2, null);
+          const all = !needle || task.root.path.toLowerCase().includes(needle);
+          const below = !all && !!state && hitBelow(state.path);
+          const expanded = below || open.has(taskKey(task));
+          out.push({ type: "task", task, status, open: expanded });
+          if (!expanded) continue;
+          if (state) expand(state, 2, null, all);
           else out.push({ type: "note", key: `${taskKey(task)}/none`, depth: 2, text: live ? (status ? "Holds no locals now." : "Reading…") : "Connect to read its locals." });
         }
     }
@@ -219,10 +249,10 @@ export function LiveWatch(props: {
     for (const [crate, members] of crates) {
       const key = `crate:${crate}`;
       out.push({ type: "group", key, name: crate || "(global)", count: members.length });
-      if (needle || open.has(key)) walk(members, 1, null);
+      if (needle || open.has(key)) walk(members, 1, null, false, (n) => n.path);
     }
     return out;
-  }, [crates, shownTasks, tasksOpen, statuses, live, needle, open, children, catalog, values]);
+  }, [crates, shownTasks, tasksOpen, statuses, live, needle, hitBelow, open, children, catalog, values]);
 
   const reads = useMemo(
     () => rows.flatMap((r) => (r.type === "node" && readable(r.node) && !tuningEntry(r.node, catalog) ? [r.node] : [])).slice(0, READ_LIMIT),
@@ -284,8 +314,8 @@ export function LiveWatch(props: {
             const state = live ? taskText(row.status) : { text: "—", tone: "" };
             const name = row.task.slots > 1 ? `${row.task.name}[${row.task.slot}]` : row.task.name;
             return (
-              <div key={key} class="row" role="treeitem" aria-expanded={open.has(key)} style={{ paddingLeft: "20px" }} onClick={() => flip(key)} title={row.task.root.path}>
-                <span class="chevron">{open.has(key) ? "▾" : "▸"}</span>
+              <div key={key} class="row" role="treeitem" aria-expanded={row.open} style={{ paddingLeft: "20px" }} onClick={() => flip(key)} title={row.task.root.path}>
+                <span class="chevron">{row.open ? "▾" : "▸"}</span>
                 <span class="name">{name}</span>
                 <span class="grow" />
                 <span class={`value ${state.tone}`} title={state.title}>
@@ -317,7 +347,7 @@ export function LiveWatch(props: {
               key={node.path}
               node={node}
               depth={row.depth}
-              open={open.has(node.path)}
+              open={row.open}
               live={live}
               read={entry ? undefined : values.get(node.path)}
               entry={entry}

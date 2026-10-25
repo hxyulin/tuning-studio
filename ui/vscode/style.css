@@ -119,8 +119,9 @@ main.empty { flex: 1; display: flex; align-items: center; justify-content: cente
 .row[aria-expanded] { cursor: pointer; }
 .row.note { color: var(--muted); font-size: 12px; }
 .chevron { width: 10px; flex: none; color: var(--muted); font-size: 10px; }
-.name { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; }
-.type { color: var(--muted); font-family: var(--mono); font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
+/* The type gives way first; the name shrinks only once the type is gone */
+.name { flex: 0 1 auto; min-width: 0; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; }
+.type { flex: 0 10000 auto; min-width: 0; color: var(--muted); font-family: var(--mono); font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
 .value { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
 .value.text { color: var(--text-enum); }
 .value.failed { color: var(--danger); }
