@@ -79,14 +79,20 @@ bits, so the host can read it in one access.
 
 `watch!` takes a name, the type, and the value. The name becomes the static's
 symbol, so it must be unique, and a repeated name fails to link. A trailing
-`unit = "rad/s"` gives the unit the host shows after a single value, and
-`section = ".name"` puts the static in that linker section; the section must be
-zeroed at boot. A `watch!`
+`unit = "rad/s"` gives the unit the host shows after a single value. A `watch!`
 value can be any `Copy` type, including structs, or a type that derives
-`Watchable`. Two counters around it let
-the host detect a read that overlapped a write and retry it. Each use of the
-macro is one static, so a function called from several tasks shares it, and
-the last call wins. The type cannot depend on a generic parameter.
+`Watchable`. Two counters around it let the host detect a read that overlapped
+a write and retry it. Each use of the macro is one static, so a function called
+from several tasks shares it, and the last call wins. The type cannot depend on
+a generic parameter.
+
+On bare-metal targets, `watch!` values and `params!` parameters go in the
+`.data.tuning_studio` section. Linker scripts that place `.data.*`, such as
+cortex-m-rt's, keep it with the rest of `.data`, and the values sit together.
+The CLI reads values in the same RAM region less than 128 bytes apart in one
+transfer, so watching many costs about as much as watching one. A trailing
+`section = ".name"` puts a `watch!` value in that linker section instead,
+which must be initialized at boot.
 
 A struct that is not `Copy`, such as one holding a driver handle, derives
 `Watchable`:

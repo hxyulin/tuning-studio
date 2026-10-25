@@ -39,8 +39,11 @@ use core::sync::atomic::{AtomicU8, AtomicU32, Ordering, fence};
 ///
 /// `unit = "rad/s"` gives the unit the host shows after the value.
 ///
-/// `section = ".uncached"` places the static in that linker section, which the
-/// board's linker script must define. The section must be zeroed at
+/// On bare-metal targets the static goes in `.data.tuning_studio`, with every
+/// [`params!`] parameter, so the host can read them all in a few transfers.
+/// Linker scripts that place `.data.*`, such as cortex-m-rt's, need no change.
+/// `section = ".uncached"` places it in that section instead, which the
+/// board's linker script must define. The section must be initialized at
 /// boot; otherwise the host can show leftover bytes until the first write.
 ///
 /// The name is the static's symbol, so it must be unique in the firmware. A
@@ -49,8 +52,15 @@ use core::sync::atomic::{AtomicU8, AtomicU32, Ordering, fence};
 /// depend on a generic parameter.
 #[macro_export]
 macro_rules! watch {
-    ($name:literal: $type:ty = $value:expr $(, unit = $unit:literal)? $(, section = $section:literal)?) => {{
-        $(#[unsafe(link_section = $section)])?
+    ($name:literal: $type:ty = $value:expr $(, unit = $unit:literal)?, section = $section:literal) => {{
+        #[unsafe(link_section = $section)]
+        #[unsafe(export_name = $name)]
+        static WATCH: $crate::Watch<<$type as $crate::Watchable>::Snapshot> =
+            $crate::Watch::new()$(.unit($unit))?;
+        WATCH.set(<$type as $crate::Watchable>::snapshot(&$value));
+    }};
+    ($name:literal: $type:ty = $value:expr $(, unit = $unit:literal)?) => {{
+        #[cfg_attr(target_os = "none", unsafe(link_section = ".data.tuning_studio"))]
         #[unsafe(export_name = $name)]
         static WATCH: $crate::Watch<<$type as $crate::Watchable>::Snapshot> =
             $crate::Watch::new()$(.unit($unit))?;
@@ -169,8 +179,10 @@ pub mod reply {
 }
 
 /// Declare several [`Param`]s. Each option after the default calls the builder
-/// method of that name, and attributes such as doc comments or `link_section`
-/// pass through.
+/// method of that name, and attributes such as doc comments pass through. On
+/// bare-metal targets the statics go in `.data.tuning_studio`, as [`watch!`]
+/// values do. For a parameter in another section, declare a plain `static`
+/// with its own `link_section`.
 ///
 /// ```
 /// tuning_studio_api::params! {
@@ -187,6 +199,7 @@ macro_rules! params {
         $vis:vis static $name:ident: $type:ty = $default:expr $(, $option:ident = $value:expr)*;
     )*) => {$(
         $(#[$attr])*
+        #[cfg_attr(target_os = "none", unsafe(link_section = ".data.tuning_studio"))]
         $vis static $name: $crate::Param<$type> = $crate::Param::new($default) $(.$option($value))*;
     )*};
 }

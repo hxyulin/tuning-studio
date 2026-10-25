@@ -92,6 +92,19 @@ shows its target.
 
 A read of a `watch!` value that overlapped a write is retried, up to 10 times.
 
+## Reading several values
+
+Each transfer from the probe costs a USB round trip, about 1 ms. Before each
+`read`, `values` and `watch` tick, the CLI reads every value it will show,
+merging those less than 128 bytes apart in the same RAM region into one
+transfer. Due session watches merge the same way. Raw addresses are read on
+their own, so the bytes around a register are never touched.
+
+On the [tune lab](../../firmware/tune-lab) at 10 MHz SWD, watching all four
+`watch!` values and two `Param`s ran at 623 ticks per second, against 146 when
+each was read alone. One value ran at about 860. `tuning-studio-api` puts its
+statics in one section, so they merge.
+
 ## Tasks
 
 `tasks` samples each Embassy task's future and the program counter while the

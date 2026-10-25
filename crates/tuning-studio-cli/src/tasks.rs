@@ -18,11 +18,8 @@ use std::time::{Duration, Instant};
 use studio_dwarf::ElfInfo;
 use studio_dwarf::tasks::{self, TaskProbe};
 
-use crate::memory::Memory;
+use crate::memory::{self, Memory};
 
-/// Regions this close are read as one, since a round trip costs more than the
-/// bytes between them.
-const MERGE_GAP: u64 = 256;
 /// Debug Exception and Monitor Control Register; bit 24 (TRCENA) enables the DWT
 const DEMCR: u64 = 0xE000_EDFC;
 const TRCENA: u64 = 1 << 24;
@@ -73,7 +70,7 @@ pub fn profile(elf: &ElfInfo, memory: &mut dyn Memory, duration: Duration) -> Re
     if profiles.is_empty() {
         bail!("the ELF has no Embassy tasks");
     }
-    let reads = plan(&mut profiles);
+    let reads = plan(&mut profiles, memory.ram());
     let sample_pc = enable_pc_sampling(memory);
     // Samples by function, for those outside every task
     let mut elsewhere: BTreeMap<String, u64> = BTreeMap::new();
@@ -83,7 +80,7 @@ pub fn profile(elf: &ElfInfo, memory: &mut dyn Memory, duration: Duration) -> Re
     while samples == 0 || start.elapsed() < duration {
         let bytes = reads
             .iter()
-            .map(|&(address, len)| memory.read(address, len))
+            .map(|&(address, len)| memory.transfer(address, len))
             .collect::<Result<Vec<_>>>()?;
         if sample_pc {
             // Bit 0 is the Thumb bit; all ones means no sample, such as while halted.
@@ -279,20 +276,8 @@ fn short_name(name: &str) -> String {
 
 /// Merge every task's regions into as few reads as possible, and record where
 /// each region lands in them.
-fn plan(profiles: &mut [Profile]) -> Vec<(u64, usize)> {
-    let mut regions: Vec<(u64, u64)> = profiles
-        .iter()
-        .flat_map(|p| p.probe.regions())
-        .map(|(address, len)| (address, address + len as u64))
-        .collect();
-    regions.sort();
-    let mut reads: Vec<(u64, u64)> = Vec::new();
-    for (start, end) in regions {
-        match reads.last_mut() {
-            Some(last) if start <= last.1 + MERGE_GAP => last.1 = last.1.max(end),
-            _ => reads.push((start, end)),
-        }
-    }
+fn plan(profiles: &mut [Profile], ram: &[std::ops::Range<u64>]) -> Vec<(u64, usize)> {
+    let reads = memory::merge(profiles.iter().flat_map(|p| p.probe.regions()), ram);
     for profile in profiles {
         profile.slices = profile
             .probe
@@ -301,16 +286,15 @@ fn plan(profiles: &mut [Profile]) -> Vec<(u64, usize)> {
             .map(|(address, len)| {
                 let read = reads
                     .iter()
-                    .position(|&(start, end)| address >= start && address + len as u64 <= end)
+                    .position(|&(start, size)| {
+                        address >= start && address + len as u64 <= start + size as u64
+                    })
                     .expect("every region is inside a read");
                 (read, (address - reads[read].0) as usize, len)
             })
             .collect();
     }
     reads
-        .into_iter()
-        .map(|(start, end)| (start, (end - start) as usize))
-        .collect()
 }
 
 /// A source path relative to the current directory when it is inside it.

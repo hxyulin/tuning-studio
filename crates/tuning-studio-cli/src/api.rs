@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use studio_dwarf::tree::{self, NodeKind};
 use studio_dwarf::{ElfInfo, NodeRef, Step, SymbolNode, VariableType};
 
-use crate::memory::Memory;
+use crate::memory::{self, Memory};
 use crate::path;
 use crate::value;
 
@@ -139,6 +139,18 @@ fn unit(elf: &ElfInfo, memory: &mut dyn Memory, node: &SymbolNode) -> String {
     unit
 }
 
+/// The bytes [`render_watch`] reads: only the counters and what lies between
+/// them, so the window a write can overlap stays as short as it can be.
+pub fn watch_span(
+    elf: &ElfInfo,
+    memory: &mut dyn Memory,
+    node: &SymbolNode,
+) -> Result<(u64, usize)> {
+    let end = field(elf, memory, node, "end")?;
+    let start = field(elf, memory, node, "start")?;
+    Ok((end.address, (start.address + 4 - end.address) as usize))
+}
+
 /// Print a `Watch`'s value as its name, if the firmware has written it. The
 /// counters around the value must match in the same read, or the read saw a
 /// write in progress and is retried.
@@ -147,12 +159,14 @@ pub fn render_watch(elf: &ElfInfo, memory: &mut dyn Memory, node: &SymbolNode) -
     let start = field(elf, memory, node, "start")?;
     let mut value = field(elf, memory, node, "value")?;
     value.wrapper = None;
-    // Only the counters and what lies between them, so the window a write can
-    // overlap stays as short as it can be.
-    let size = (start.address + 4 - end.address) as usize;
+    let (_, size) = watch_span(elf, memory, node)?;
     let unit = unit(elf, memory, node);
-    for _ in 0..WATCH_ATTEMPTS {
-        memory.snapshot(end.address, size)?;
+    for attempt in 0..WATCH_ATTEMPTS {
+        if attempt == 0 {
+            memory.snapshot(end.address, size)?;
+        } else {
+            memory.reread(end.address, size)?;
+        }
         let (ends, starts) = (memory.word(end.address, 4)?, memory.word(start.address, 4)?);
         if starts == 0 {
             return Ok(format!(
@@ -206,10 +220,7 @@ impl Param {
 /// tune_lab::SETPOINT: f32 = 50.0 rad/s (target 100.0, default 100.0, -300.0 to 300.0, step 1.0)
 /// ```
 pub fn render_param(elf: &ElfInfo, memory: &mut dyn Memory, node: &SymbolNode) -> Result<String> {
-    let size = node
-        .size
-        .ok_or_else(|| anyhow!("{} has no size", node.path))? as usize;
-    memory.snapshot(node.address, size)?;
+    memory.snapshot(node.address, param_size(node)?)?;
     let param = Param::new(elf, memory, node)?;
     let scalar = scalar(&param.value)?;
     let value = text(memory, &param.value)?;
@@ -316,6 +327,11 @@ pub fn values(elf: &ElfInfo, memory: &mut dyn Memory) -> Result<String> {
     if found.is_empty() {
         bail!("the ELF declares no `Param` or `Watch` from tuning-studio-api");
     }
+    let spans = found
+        .iter()
+        .map(|(kind, node)| span(elf, memory, *kind, node))
+        .collect::<Result<Vec<_>>>()?;
+    memory::prefetch(memory, spans)?;
     let mut out = String::new();
     for (kind, node) in &found {
         out += &match kind {
@@ -323,7 +339,28 @@ pub fn values(elf: &ElfInfo, memory: &mut dyn Memory) -> Result<String> {
             Kind::Watch => render_watch(elf, memory, node)?,
         };
     }
+    memory.forget();
     Ok(out)
+}
+
+/// The bytes rendering `node` reads at once: a `Watch`'s counters and value, or a
+/// whole `Param`.
+pub fn span(
+    elf: &ElfInfo,
+    memory: &mut dyn Memory,
+    kind: Kind,
+    node: &SymbolNode,
+) -> Result<(u64, usize)> {
+    match kind {
+        Kind::Watch => watch_span(elf, memory, node),
+        Kind::Param => Ok((node.address, param_size(node)?)),
+    }
+}
+
+fn param_size(node: &SymbolNode) -> Result<usize> {
+    Ok(node
+        .size
+        .ok_or_else(|| anyhow!("{} has no size", node.path))? as usize)
 }
 
 #[cfg(test)]

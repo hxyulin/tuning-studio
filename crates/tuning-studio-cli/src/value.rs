@@ -124,10 +124,17 @@ pub fn encode_char(text: &str) -> Result<Vec<u8>> {
     Ok(code.to_le_bytes().to_vec())
 }
 
+/// The bytes [`render`] reads at once, for a node small enough to read whole.
+pub fn span(node: &SymbolNode) -> Option<(u64, usize)> {
+    node.size
+        .filter(|&size| size > 0 && size <= SNAPSHOT_LIMIT)
+        .map(|size| (node.address, size as usize))
+}
+
 /// The node and everything below it, one line per node.
 pub fn render(elf: &ElfInfo, memory: &mut dyn Memory, node: &SymbolNode) -> Result<String> {
-    if let Some(size) = node.size.filter(|&size| size > 0 && size <= SNAPSHOT_LIMIT) {
-        memory.snapshot(node.address, size as usize)?;
+    if let Some((address, size)) = span(node) {
+        memory.snapshot(address, size)?;
     }
     Ok(render_snapshot(elf, memory, node, &node.path))
 }

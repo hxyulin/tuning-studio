@@ -294,10 +294,11 @@ fn main() -> Result<()> {
             let (probe, elf) = target.attach()?;
             let mut session = probe.session.lock();
             let mut memory = probe.memory(&mut session)?;
-            for location in &locations {
-                let location = path::locate(elf.as_ref(), &mut memory, location)?;
-                print!("{}", read(elf.as_ref(), &mut memory, &location)?);
-            }
+            let locations = locations
+                .iter()
+                .map(|location| path::locate(elf.as_ref(), &mut memory, location))
+                .collect::<Result<Vec<_>>>()?;
+            print!("{}", read_each(elf.as_ref(), &mut memory, &locations)?);
         }
         Command::Watch {
             target,
@@ -483,11 +484,7 @@ fn watch(
     let mut reads = 0;
     while !stop.load(Ordering::Relaxed) && count.is_none_or(|count| reads < count) {
         let elapsed = start.elapsed().as_secs_f64();
-        let mut text = String::new();
-        for location in locations {
-            let location = refresh(elf, memory, location)?;
-            text += &read(elf, memory, &location)?;
-        }
+        let text = read_all(elf, memory, &[locations]).remove(0)?;
         let mut out = std::io::stdout().lock();
         if terminal {
             // Home the cursor and clear the screen, as watch(1) does.
@@ -531,6 +528,68 @@ fn refresh(
         }
         (&Location::Raw { address, scalar }, _) => Location::Raw { address, scalar },
         (Location::Node(_), None) => unreachable!("symbol paths need an ELF"),
+    })
+}
+
+/// Read each group of locations once, as one output each. The values they show
+/// are fetched first, values close together in one transfer, so reading several
+/// costs little more than reading one.
+pub fn read_all(
+    elf: Option<&ElfInfo>,
+    memory: &mut dyn Memory,
+    groups: &[&[Location]],
+) -> Vec<Result<String>> {
+    let groups: Vec<Result<Vec<Location>>> = groups
+        .iter()
+        .map(|group| group.iter().map(|l| refresh(elf, memory, l)).collect())
+        .collect();
+    let mut spans = Vec::new();
+    for location in groups.iter().flatten().flatten() {
+        // A location that fails here fails again when it is read, with its error.
+        if let Ok(Some(span)) = span(elf, memory, location) {
+            spans.push(span);
+        }
+    }
+    // Without the prefetch, each value reads its own bytes and reports its own error.
+    if memory::prefetch(memory, spans).is_err() {
+        memory.forget();
+    }
+    let texts = groups
+        .into_iter()
+        .map(|group| {
+            group?.iter().try_fold(String::new(), |text, location| {
+                Ok(text + &read(elf, memory, location)?)
+            })
+        })
+        .collect();
+    memory.forget();
+    texts
+}
+
+/// Read each location once, together as [`read_all`] does, stopping at the first
+/// that fails.
+pub fn read_each(
+    elf: Option<&ElfInfo>,
+    memory: &mut dyn Memory,
+    locations: &[Location],
+) -> Result<String> {
+    let groups: Vec<&[Location]> = locations.iter().map(std::slice::from_ref).collect();
+    read_all(elf, memory, &groups).into_iter().collect()
+}
+
+/// The bytes [`read`] reads of `location` at once. A raw address has none, so the
+/// bytes around it, which may be registers, are never read.
+fn span(
+    elf: Option<&ElfInfo>,
+    memory: &mut dyn Memory,
+    location: &Location,
+) -> Result<Option<(u64, usize)>> {
+    Ok(match (location, elf) {
+        (Location::Node(node), Some(elf)) => match api::kind(node) {
+            Some(kind) => Some(api::span(elf, memory, kind, node)?),
+            None => value::span(node),
+        },
+        _ => None,
     })
 }
 
@@ -720,5 +779,26 @@ mod api_tests {
                 .to_string();
             assert!(error.contains(expected), "{error}");
         }
+    }
+
+    #[test]
+    fn reads_nearby_values_in_one_transfer() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tune_lab.elf");
+        let elf = ElfParser::parse(path).unwrap();
+        let mut memory = Fake::from_elf(path);
+        let texts = ["motor.error", "motor.speed", "motor.state", "tune_lab::KP"];
+        let locations = texts
+            .iter()
+            .map(|text| path::locate(Some(&elf), &mut memory, text).unwrap())
+            .collect::<Vec<_>>();
+        // The first read also fetches the units from flash.
+        read_each(Some(&elf), &mut memory, &locations).unwrap();
+        memory.transfers = 0;
+        let text = read_each(Some(&elf), &mut memory, &locations).unwrap();
+        assert_eq!(memory.transfers, 1, "{text}");
+        assert!(
+            text.starts_with("motor.error: f32 = <not written yet>\n"),
+            "{text}"
+        );
     }
 }

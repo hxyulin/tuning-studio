@@ -105,7 +105,10 @@ SWD, 115 µs at 4 MHz, and 225 µs at 1 MHz. At full speed:
 | The 48-byte future, 10 MHz SWD | 840–920 |
 | The future, 1 MHz SWD | 450 |
 
-Reading three locations per tick divides the rate by three. A sample that
+Reading three locations per tick divided the rate by three. Since the CLI
+merges nearby values into one transfer, both `watch!` values together ran at
+807 reads per second at `WATCH_EVERY` 64. The future is in `.bss`, so it still
+costs a transfer of its own. A sample that
 needs 10 attempts costs 10 round trips: with all `watch!` reads failing, three
 locations ran at 47 reads per second.
 

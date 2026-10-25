@@ -484,10 +484,11 @@ fn handle(
         SessionCommand::Reset { .. } | SessionCommand::Flash { .. } => unreachable!(),
         SessionCommand::Read { locations } => {
             let mut memory = target.memory(&mut session)?;
-            for location in &locations {
-                let location = path::locate(elf, &mut memory, location)?;
-                *out += &crate::read(elf, &mut memory, &location)?;
-            }
+            let locations = locations
+                .iter()
+                .map(|location| path::locate(elf, &mut memory, location))
+                .collect::<Result<Vec<_>>>()?;
+            *out += &crate::read_each(elf, &mut memory, &locations)?;
         }
         SessionCommand::Watch {
             locations,
@@ -647,19 +648,22 @@ fn run_watches(target: &Target, state: &mut State) {
             return;
         }
     };
+    // Every due watch reads together, so values they share a transfer for are
+    // read once.
+    let due: Vec<&[Location]> = state
+        .watches
+        .iter()
+        .filter(|watch| watch.next <= now)
+        .map(|watch| watch.locations.as_slice())
+        .collect();
+    let mut texts = crate::read_all(elf, &mut memory, &due).into_iter();
     // Output per watch, and the result of each watch that ended
     let mut sent = Vec::new();
     state.watches.retain_mut(|watch| {
         if watch.next > now {
             return true;
         }
-        let text = watch
-            .locations
-            .iter()
-            .try_fold(String::new(), |text, location| {
-                let location = crate::refresh(elf, &mut memory, location)?;
-                Ok::<_, anyhow::Error>(text + &crate::read(elf, &mut memory, &location)?)
-            });
+        let text = texts.next().expect("a text for each due watch");
         let text = match text {
             Ok(text) => format!("--- watch {}, {elapsed:.3} s\n{text}", watch.id),
             Err(e) => {

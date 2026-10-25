@@ -16,7 +16,7 @@ use probe_rs_target::{ApAddress, CoreAccessOptions, MemoryRegion};
 use std::ops::Range;
 
 use crate::daemon;
-use crate::memory::Memory;
+use crate::memory::{Memory, Snapshots};
 
 pub struct Target {
     pub session: FairMutex<Session>,
@@ -25,6 +25,7 @@ pub struct Target {
     ap: FullyQualifiedApAddress,
     /// Flash, where a bus write has no effect
     nvm: Vec<Range<u64>>,
+    ram: Vec<Range<u64>>,
 }
 
 impl Target {
@@ -70,18 +71,26 @@ impl Target {
             .attach(chip, permissions)
             .with_context(|| format!("could not attach to {chip}"))?;
         let ap = core_memory_ap(&session)?;
-        let nvm = session
-            .target()
-            .memory_map
-            .iter()
-            .filter(|region| matches!(region, MemoryRegion::Nvm(_)))
-            .map(|region| region.address_range())
-            .collect();
+        let regions = |ram: bool| {
+            session
+                .target()
+                .memory_map
+                .iter()
+                .filter(|region| match region {
+                    MemoryRegion::Nvm(_) => !ram,
+                    MemoryRegion::Ram(_) => ram,
+                    _ => false,
+                })
+                .map(|region| region.address_range())
+                .collect()
+        };
+        let (nvm, ram) = (regions(false), regions(true));
         Ok(Self {
             session: FairMutex::new(session),
             probe_id,
             ap,
             nvm,
+            ram,
         })
     }
 
@@ -94,7 +103,8 @@ impl Target {
         Ok(ApMemory {
             ap,
             nvm: self.nvm.clone(),
-            snapshot: None,
+            ram: self.ram.clone(),
+            snapshots: Snapshots::default(),
         })
     }
 }
@@ -140,25 +150,12 @@ pub struct ApMemory<'a> {
     ap: Box<dyn ArmMemoryInterface + 'a>,
     /// Flash, where a bus write has no effect
     nvm: Vec<Range<u64>>,
-    /// Bytes read in one transfer, so a struct's fields come from the same moment
-    snapshot: Option<(u64, Vec<u8>)>,
+    ram: Vec<Range<u64>>,
+    snapshots: Snapshots,
 }
 
 impl Memory for ApMemory<'_> {
-    fn snapshot(&mut self, address: u64, len: usize) -> Result<()> {
-        self.snapshot = None;
-        let bytes = self.read(address, len)?;
-        self.snapshot = Some((address, bytes));
-        Ok(())
-    }
-
-    fn read(&mut self, address: u64, len: usize) -> Result<Vec<u8>> {
-        if let Some((start, bytes)) = &self.snapshot {
-            let offset = address.wrapping_sub(*start);
-            if address >= *start && offset + len as u64 <= bytes.len() as u64 {
-                return Ok(bytes[offset as usize..][..len].to_vec());
-            }
-        }
+    fn transfer(&mut self, address: u64, len: usize) -> Result<Vec<u8>> {
         let mut read = || -> Result<Vec<u8>, probe_rs::Error> {
             Ok(match (len, address % len.max(1) as u64) {
                 (1, _) => vec![self.ap.read_word_8(address)?],
@@ -180,7 +177,7 @@ impl Memory for ApMemory<'_> {
         if self.nvm.iter().any(|r| address < r.end && r.start < end) {
             bail!("{address:#010x} is in flash, which ignores writes");
         }
-        self.snapshot = None;
+        self.forget();
         let mut write = || -> Result<(), probe_rs::Error> {
             match (data.len(), address % data.len().max(1) as u64) {
                 (1, _) => self.ap.write_word_8(address, data[0]),
@@ -200,5 +197,13 @@ impl Memory for ApMemory<'_> {
         write()
             .with_context(|| format!("could not write {} bytes at {address:#010x}", data.len()))?;
         Ok(())
+    }
+
+    fn snapshots(&mut self) -> &mut Snapshots {
+        &mut self.snapshots
+    }
+
+    fn ram(&self) -> &[Range<u64>] {
+        &self.ram
     }
 }
