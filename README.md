@@ -2,7 +2,8 @@
 
 Inspect live embedded variables, plot telemetry, tune parameters, and explore
 Embassy tasks from a desktop app or VS Code. Attach over SWD to a running target
-without halting or resetting it, or use a firmware-provided USB serial link.
+without resetting it, or use a firmware-provided USB serial link. Sampling never
+halts the core; connecting and disconnecting each halt it for about 20 ms.
 
 Tuning Studio works with C, C++ and Rust firmware ELFs. It grew out of RoboMaster
 tooling, but the firmware API has no robot, board, RTOS or transport dependency.

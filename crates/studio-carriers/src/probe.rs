@@ -1,8 +1,12 @@
 //! Debug probe carrier over probe-rs: SWD memory access through core 0's MEM-AP.
 //!
 //! Memory goes straight through the access port rather than a probe-rs `Core`:
-//! the core is never halted, and the AP handle is kept open for as long as the
-//! session samples, which saves several USB round trips per read.
+//! sampling never halts the core, and the AP handle is kept open for as long as
+//! the session samples, which saves several USB round trips per read.
+//!
+//! Opening and dropping the probe-rs `Session` each clear the hardware
+//! breakpoints with every core halted: about 20 ms per halt on an STM32H723
+//! over CMSIS-DAP (`examples/attach_halt.rs`).
 
 use probe_rs::architecture::arm::dp::DpAddress;
 use probe_rs::architecture::arm::memory::ArmMemoryInterface;
@@ -87,7 +91,7 @@ pub struct ProbeLink {
 }
 
 impl ProbeLink {
-    /// Attach without halting or resetting: the firmware keeps running.
+    /// Attach without resetting; the core halts briefly while probe-rs clears breakpoints.
     pub fn open(config: &ProbeConfig) -> Result<Self> {
         let lister = Lister::new();
         let mut probe = match &config.selector {
