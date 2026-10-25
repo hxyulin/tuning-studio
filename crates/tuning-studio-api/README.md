@@ -81,10 +81,34 @@ bits, so the host can read it in one access.
 symbol, so it must be unique, and a repeated name fails to link. A trailing
 `section = ".name"` puts the static in that linker section; the section must be
 zeroed at boot. A `watch!`
-value can be any `Copy` type, including structs. Two counters around it let
+value can be any `Copy` type, including structs, or a type that derives
+`Watchable`. Two counters around it let
 the host detect a read that overlapped a write and retry it. Each use of the
 macro is one static, so a function called from several tasks shares it, and
 the last call wins. The type cannot depend on a generic parameter.
+
+A struct that is not `Copy`, such as one holding a driver handle, derives
+`Watchable`:
+
+```rust
+#[derive(Watchable)]
+struct Motor {
+    speed: f32,
+    pi: Pi,              // derives Watchable too
+    #[watch(skip)]
+    driver: CanDriver,   // nothing to show
+}
+
+watch!("motor": Motor = *motor);
+```
+
+The derive generates `MotorSnapshot`, a `Copy` struct with the kept fields
+under the same names, and `watch!` stores that. The host shows it as a normal
+struct. A `Copy` type is already `Watchable`. Generic structs and enums that
+are not `Copy` need a hand-written `impl Watchable`: pick a `Copy` snapshot
+type and fill it in `snapshot`. Watching a reference or pointer would store an
+address, and reads through it would be torn or dangling, so `watch!` always
+stores a copy.
 
 Then, with the firmware running:
 

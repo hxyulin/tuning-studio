@@ -3,13 +3,14 @@
 //! It runs from the reset 64 MHz HSI clock with data in DTCM.
 //!
 //! SysTick runs the loop at 1 kHz. The motor is a first-order model: speed moves
-//! toward `GAIN * output` with a 50 ms time constant.
+//! toward `GAIN * output` with a 50 ms time constant. `Motor` is not `Copy`,
+//! since it holds a driver handle, so it derives `Watchable` to be watched.
 #![no_std]
 #![no_main]
 
 use cortex_m::peripheral::syst::SystClkSource;
 use cortex_m_rt::{entry, exception};
-use tuning_studio_api::{params, watch};
+use tuning_studio_api::{Watchable, params, watch};
 
 params! {
     /// Target speed
@@ -27,17 +28,42 @@ const GAIN: f32 = 300.0;
 const DT: f32 = 0.001;
 const TAU: f32 = 0.05;
 
-#[derive(Clone, Copy)]
+/// The simulated motor and its controller. Not `Copy`, because of the driver.
+#[derive(Watchable)]
 struct Motor {
     speed: f32,
-    integral: f32,
     ticks: u64,
+    pi: Pi,
+    #[watch(skip)]
+    driver: Driver,
+}
+
+#[derive(Watchable)]
+struct Pi {
+    integral: f32,
+    /// Whether the last output hit the limit
+    saturated: bool,
+}
+
+/// Stands in for a hardware handle, such as a CAN driver: no value to show
+struct Driver {
+    commands: u32,
+}
+
+impl Driver {
+    fn send(&mut self, _output: f32) {
+        self.commands = self.commands.wrapping_add(1);
+    }
 }
 
 static mut MOTOR: Motor = Motor {
     speed: 0.0,
-    integral: 0.0,
     ticks: 0,
+    pi: Pi {
+        integral: 0.0,
+        saturated: false,
+    },
+    driver: Driver { commands: 0 },
 };
 
 #[entry]
@@ -62,16 +88,18 @@ fn control(motor: &mut Motor) {
 
     let error = setpoint - motor.speed;
     let output = if ENABLE.get() {
-        let unclamped = kp * error + motor.integral;
+        let unclamped = kp * error + motor.pi.integral;
         // Integrate only while the output is not saturated.
-        if unclamped.abs() < limit {
-            motor.integral += ki * error * DT * kp;
+        motor.pi.saturated = unclamped.abs() >= limit;
+        if !motor.pi.saturated {
+            motor.pi.integral += ki * error * DT * kp;
         }
         unclamped.clamp(-limit, limit)
     } else {
-        motor.integral = 0.0;
+        motor.pi.integral = 0.0;
         0.0
     };
+    motor.driver.send(output);
     motor.speed += (GAIN * output - motor.speed) * DT / TAU;
     motor.ticks += 1;
 

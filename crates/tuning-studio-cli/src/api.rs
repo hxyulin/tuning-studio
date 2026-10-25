@@ -339,10 +339,11 @@ mod tests {
             let counter = field(&elf, &mut memory, &state, name).unwrap();
             memory.write(counter.address, &3u32.to_le_bytes()).unwrap();
         }
-        let text = render_watch(&elf, &mut memory, &state).unwrap();
-        assert!(
-            text.starts_with("motor.state: Motor\n  speed: f32 = 0.0\n"),
-            "{text}"
+        // A derived snapshot: `pi` nests, and the skipped `driver` is absent.
+        assert_eq!(
+            render_watch(&elf, &mut memory, &state).unwrap(),
+            "motor.state: MotorSnapshot\n  speed: f32 = 0.0\n  ticks: u64 = 0\n  pi: PiSnapshot\n    \
+             integral: f32 = 0.0\n    saturated: bool = false\n"
         );
     }
 

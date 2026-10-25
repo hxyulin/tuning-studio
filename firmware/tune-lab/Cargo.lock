@@ -178,6 +178,16 @@ name = "tuning-studio-api"
 version = "0.2.0"
 dependencies = [
  "critical-section",
+ "tuning-studio-api-macros",
+]
+
+[[package]]
+name = "tuning-studio-api-macros"
+version = "0.2.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

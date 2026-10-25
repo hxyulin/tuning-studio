@@ -11,8 +11,14 @@ authors.workspace = true
 keywords = ["embedded", "no-std", "debugging", "tuning"]
 categories = ["embedded", "no-std"]
 
+[features]
+default = ["derive"]
+# `#[derive(Watchable)]`
+derive = ["dep:tuning-studio-api-macros"]
+
 [dependencies]
 critical-section = "1.2"
+tuning-studio-api-macros = { path = "../tuning-studio-api-macros", optional = true }
 
 [dev-dependencies]
 critical-section = { version = "1.2", features = ["std"] }

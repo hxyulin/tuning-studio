@@ -2,7 +2,8 @@
 //! layouts the host reads from DWARF.
 //!
 //! - [`Watch`] and [`watch!`] keep a copy of a value for the host to read.
-//!   Only the firmware writes it.
+//!   Only the firmware writes it. Anything [`Watchable`] can be watched: every
+//!   `Copy` type, and structs that derive it.
 //! - [`Param`] is a value the host asks to change. The firmware applies the
 //!   request in [`Param::get`], within the declared range and step, and replies.
 //!
@@ -12,6 +13,12 @@
 //! name, so field offsets may change. Renaming a field or changing what it means
 //! is a format change.
 #![no_std]
+
+// The derive names this crate by its path, which this lets its own tests use.
+extern crate self as tuning_studio_api;
+
+#[cfg(feature = "derive")]
+pub use tuning_studio_api_macros::Watchable;
 
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
@@ -27,6 +34,9 @@ use core::sync::atomic::{AtomicU8, AtomicU32, Ordering, fence};
 /// # }
 /// ```
 ///
+/// The value can be any [`Watchable`] type. Pass the value or a place, such as
+/// `*motor` behind a reference; the macro borrows it and stores its snapshot.
+///
 /// `section = ".uncached"` places the static in that linker section, which the
 /// board's linker script must define. The section must be zeroed at
 /// boot; otherwise the host can show leftover bytes until the first write.
@@ -40,9 +50,46 @@ macro_rules! watch {
     ($name:literal: $type:ty = $value:expr $(, section = $section:literal)?) => {{
         $(#[unsafe(link_section = $section)])?
         #[unsafe(export_name = $name)]
-        static WATCH: $crate::Watch<$type> = $crate::Watch::new();
-        WATCH.set($value);
+        static WATCH: $crate::Watch<<$type as $crate::Watchable>::Snapshot> =
+            $crate::Watch::new();
+        WATCH.set(<$type as $crate::Watchable>::snapshot(&$value));
     }};
+}
+
+/// A value [`watch!`] can copy for the host.
+///
+/// Every `Copy` type is its own snapshot. For a struct that is not `Copy`, such
+/// as one holding a driver handle, derive it:
+///
+/// ```
+/// # struct CanDriver;
+/// #[derive(tuning_studio_api::Watchable)]
+/// struct Motor {
+///     speed: f32,
+///     #[watch(skip)]
+///     driver: CanDriver,
+/// }
+///
+/// fn control(motor: &Motor) {
+///     tuning_studio_api::watch!("motor": Motor = *motor);
+/// }
+/// ```
+///
+/// The derive generates `MotorSnapshot`, a `Copy` struct with each kept field's
+/// snapshot under the same name, so nested structs that derive it work too.
+/// It does not support generic types or enums; implement the trait by hand for
+/// those.
+pub trait Watchable {
+    /// What the host reads
+    type Snapshot: Copy;
+    fn snapshot(&self) -> Self::Snapshot;
+}
+
+impl<T: Copy> Watchable for T {
+    type Snapshot = T;
+    fn snapshot(&self) -> T {
+        *self
+    }
 }
 
 /// A copy of a value for the host to read.
@@ -427,6 +474,40 @@ mod tests {
         assert_eq!(reply(&enable).1, reply::REFUSED);
         request(&enable, 1);
         assert!(enable.get());
+    }
+
+    struct Driver;
+
+    #[derive(Watchable)]
+    struct Pid {
+        integral: f32,
+    }
+
+    #[derive(Watchable)]
+    struct Motor {
+        speed: f32,
+        pid: Pid,
+        #[watch(skip)]
+        _driver: Driver,
+    }
+
+    #[derive(Watchable)]
+    struct Pair(u8, #[watch(skip)] Driver, i16);
+
+    #[test]
+    fn derives_snapshots_without_skipped_fields() {
+        let motor = Motor {
+            speed: 2.0,
+            pid: Pid { integral: 0.5 },
+            _driver: Driver,
+        };
+        watch!("test.motor": Motor = motor);
+        let snapshot = motor.snapshot();
+        assert_eq!((snapshot.speed, snapshot.pid.integral), (2.0, 0.5));
+        assert_eq!(size_of::<MotorSnapshot>(), 8);
+        let pair = Pair(1, Driver, -2).snapshot();
+        assert_eq!((pair.0, pair.1), (1, -2));
+        assert_eq!(f32::snapshot(&1.5), 1.5);
     }
 
     #[test]
