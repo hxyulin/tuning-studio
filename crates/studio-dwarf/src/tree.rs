@@ -17,7 +17,9 @@
 use crate::dwarf_parser::DwarfDiagnostics;
 use crate::elf::{ElfInfo, SymbolInfo};
 use crate::tasks;
-use crate::type_table::{MemberDef, SourceLocation, TypeDef, TypeId, TypeTable, VariantDef};
+use crate::type_table::{
+    MemberDef, SourceLocation, StructDef, TypeDef, TypeId, TypeTable, VariantDef,
+};
 use crate::variable_type::VariableType;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -405,9 +407,7 @@ pub fn children_page(
                     n
                 }))
                 .collect(),
-            None => s
-                .members
-                .iter()
+            None => unique_members(s)
                 .map(|m| member_node(Step::Member(m.name.clone()), m, None))
                 .collect(),
         },
@@ -731,6 +731,17 @@ fn enter(
 /// Deepest a wrapper chain is followed, against a cyclic type table.
 const MAX_WRAPPERS: usize = 16;
 
+/// Members by name, first occurrence only. rustc lists an `async fn`'s moved
+/// arguments twice in a suspend state, at the same offset, and a path names
+/// the first member of a name anyway.
+fn unique_members(s: &StructDef) -> impl Iterator<Item = &MemberDef> {
+    s.members
+        .iter()
+        .enumerate()
+        .filter(|(i, m)| !s.members[..*i].iter().any(|e| e.name == m.name))
+        .map(|(_, m)| m)
+}
+
 /// The one value a wrapper holds: its only member that is not zero-sized,
 /// filling the whole wrapper. `Atomic<u32>.v`, `Mutex.data` (beside a
 /// zero-sized `raw`), `MaybeUninit.value`. Tagged enums are not wrappers.
@@ -822,7 +833,7 @@ pub(crate) fn describe(
                 NodeKind::TaggedEnum,
                 Some((p.variants.len() + usize::from(p.discriminant.is_some())) as u64),
             ),
-            None => (NodeKind::Struct, Some(s.members.len() as u64)),
+            None => (NodeKind::Struct, Some(unique_members(s).count() as u64)),
         },
         Some(TypeDef::Union(s)) => (NodeKind::Union, Some(s.members.len() as u64)),
         Some(TypeDef::Array { count, .. }) => (NodeKind::Array, *count),
