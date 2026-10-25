@@ -37,6 +37,8 @@ use core::sync::atomic::{AtomicU8, AtomicU32, Ordering, fence};
 /// The value can be any [`Watchable`] type. Pass the value or a place, such as
 /// `*motor` behind a reference; the macro borrows it and stores its snapshot.
 ///
+/// `unit = "rad/s"` gives the unit the host shows after the value.
+///
 /// `section = ".uncached"` places the static in that linker section, which the
 /// board's linker script must define. The section must be zeroed at
 /// boot; otherwise the host can show leftover bytes until the first write.
@@ -47,11 +49,11 @@ use core::sync::atomic::{AtomicU8, AtomicU32, Ordering, fence};
 /// depend on a generic parameter.
 #[macro_export]
 macro_rules! watch {
-    ($name:literal: $type:ty = $value:expr $(, section = $section:literal)?) => {{
+    ($name:literal: $type:ty = $value:expr $(, unit = $unit:literal)? $(, section = $section:literal)?) => {{
         $(#[unsafe(link_section = $section)])?
         #[unsafe(export_name = $name)]
         static WATCH: $crate::Watch<<$type as $crate::Watchable>::Snapshot> =
-            $crate::Watch::new();
+            $crate::Watch::new()$(.unit($unit))?;
         WATCH.set(<$type as $crate::Watchable>::snapshot(&$value));
     }};
 }
@@ -104,6 +106,8 @@ pub struct Watch<T> {
     end: AtomicU32,
     value: UnsafeCell<MaybeUninit<T>>,
     start: AtomicU32,
+    /// Shown after the value; empty for none
+    unit: &'static str,
 }
 
 // SAFETY: `set` writes the value inside a critical section, and nothing in the
@@ -117,7 +121,15 @@ impl<T: Copy> Watch<T> {
             end: AtomicU32::new(0),
             value: UnsafeCell::new(MaybeUninit::uninit()),
             start: AtomicU32::new(0),
+            unit: "",
         }
+    }
+
+    /// The unit the host shows, such as `"rad/s"`.
+    #[must_use]
+    pub const fn unit(mut self, unit: &'static str) -> Self {
+        self.unit = unit;
+        self
     }
 
     pub fn set(&self, value: T) {
@@ -502,6 +514,7 @@ mod tests {
             _driver: Driver,
         };
         watch!("test.motor": Motor = motor);
+        watch!("test.speed": f32 = motor.speed, unit = "rad/s");
         let snapshot = motor.snapshot();
         assert_eq!((snapshot.speed, snapshot.pid.integral), (2.0, 0.5));
         assert_eq!(size_of::<MotorSnapshot>(), 8);

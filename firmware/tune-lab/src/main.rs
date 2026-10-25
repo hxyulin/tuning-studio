@@ -103,9 +103,9 @@ fn control(motor: &mut Motor) {
     motor.speed += (GAIN * output - motor.speed) * DT / TAU;
     motor.ticks += 1;
 
-    watch!("motor.error": f32 = error);
+    watch!("motor.error": f32 = error, unit = "rad/s");
     watch!("motor.output": f32 = output);
-    watch!("motor.speed": f32 = motor.speed);
+    watch!("motor.speed": f32 = motor.speed, unit = "rad/s");
     watch!("motor.state": Motor = *motor);
 }
 

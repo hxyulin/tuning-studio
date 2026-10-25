@@ -63,7 +63,7 @@ params! {
 
 fn control(speed: f32) -> f32 {
     let error = SETPOINT.get() - speed;
-    watch!("motor.error": f32 = error);
+    watch!("motor.error": f32 = error, unit = "rad/s");
     if ENABLE.get() { KP.get() * error } else { 0.0 }
 }
 ```
@@ -79,6 +79,7 @@ bits, so the host can read it in one access.
 
 `watch!` takes a name, the type, and the value. The name becomes the static's
 symbol, so it must be unique, and a repeated name fails to link. A trailing
+`unit = "rad/s"` gives the unit the host shows after a single value, and
 `section = ".name"` puts the static in that linker section; the section must be
 zeroed at boot. A `watch!`
 value can be any `Copy` type, including structs, or a type that derives

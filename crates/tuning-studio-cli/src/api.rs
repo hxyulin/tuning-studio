@@ -3,6 +3,8 @@
 //! Both are found by type name and read by field name.
 
 use anyhow::{Result, anyhow, bail};
+use std::collections::HashMap;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use studio_dwarf::tree::{self, NodeKind};
 use studio_dwarf::{ElfInfo, NodeRef, Step, SymbolNode, VariableType};
@@ -96,6 +98,47 @@ fn field_text(
     text(memory, &field)
 }
 
+/// Unit strings by the address of the `unit` field that points to them. They
+/// live in flash, so each is read once, and later reads of the value cost no
+/// extra probe round trip.
+static UNITS: Mutex<Option<HashMap<u64, String>>> = Mutex::new(None);
+
+/// Forget the cached units, after flashing firmware whose strings may differ.
+pub fn forget_units() {
+    *UNITS.lock().unwrap() = None;
+}
+
+/// The text of `node`'s `unit` field with a space before it, or nothing when it
+/// is empty or the firmware's tuning-studio-api has no unit there.
+fn unit(elf: &ElfInfo, memory: &mut dyn Memory, node: &SymbolNode) -> String {
+    let Ok(field) = field(elf, memory, node, "unit") else {
+        return String::new();
+    };
+    if let Some(unit) = UNITS
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|units| units.get(&field.address))
+    {
+        return unit.clone();
+    }
+    let Ok(Some(preview)) = tree::preview(elf, &field.node, &mut |address, len| {
+        memory.read(address, len).map_err(|e| format!("{e:#}"))
+    }) else {
+        return String::new();
+    };
+    let unit = match preview.text.trim_matches('"') {
+        "" => String::new(),
+        unit => format!(" {unit}"),
+    };
+    UNITS
+        .lock()
+        .unwrap()
+        .get_or_insert_default()
+        .insert(field.address, unit.clone());
+    unit
+}
+
 /// Print a `Watch`'s value as its name, if the firmware has written it. The
 /// counters around the value must match in the same read, or the read saw a
 /// write in progress and is retried.
@@ -104,11 +147,12 @@ pub fn render_watch(elf: &ElfInfo, memory: &mut dyn Memory, node: &SymbolNode) -
     let start = field(elf, memory, node, "start")?;
     let mut value = field(elf, memory, node, "value")?;
     value.wrapper = None;
-    let size = node
-        .size
-        .ok_or_else(|| anyhow!("{} has no size", node.path))? as usize;
+    // Only the counters and what lies between them, so the window a write can
+    // overlap stays as short as it can be.
+    let size = (start.address + 4 - end.address) as usize;
+    let unit = unit(elf, memory, node);
     for _ in 0..WATCH_ATTEMPTS {
-        memory.snapshot(node.address, size)?;
+        memory.snapshot(end.address, size)?;
         let (ends, starts) = (memory.word(end.address, 4)?, memory.word(start.address, 4)?);
         if starts == 0 {
             return Ok(format!(
@@ -117,7 +161,12 @@ pub fn render_watch(elf: &ElfInfo, memory: &mut dyn Memory, node: &SymbolNode) -
             ));
         }
         if ends == starts {
-            return Ok(value::render_snapshot(elf, memory, &value, &node.path));
+            let mut text = value::render_snapshot(elf, memory, &value, &node.path);
+            // The unit follows a single value; a struct's fields have none yet.
+            if value.scalar.is_some() && !unit.is_empty() {
+                text.insert_str(text.len() - 1, &unit);
+            }
+            return Ok(text);
         }
     }
     // Inline, as other unreadable values are, so a `watch` keeps going.
@@ -188,16 +237,7 @@ pub fn render_param(elf: &ElfInfo, memory: &mut dyn Memory, node: &SymbolNode) -
     if memory.word(param.request_id.address, 4)? != memory.word(param.reply_id.address, 4)? {
         notes.push("a request is waiting for the firmware".into());
     }
-    let unit = field(elf, memory, node, "unit")?;
-    let unit = tree::preview(elf, &unit.node, &mut |address, len| {
-        memory.read(address, len).map_err(|e| format!("{e:#}"))
-    })
-    .ok()
-    .flatten()
-    .map(|preview| preview.text.trim_matches('"').to_string())
-    .filter(|unit| !unit.is_empty())
-    .map(|unit| format!(" {unit}"))
-    .unwrap_or_default();
+    let unit = unit(elf, memory, node);
     Ok(format!(
         "{}: {} = {value}{unit} ({})\n",
         node.path,
@@ -325,12 +365,22 @@ mod tests {
         write(&mut memory, 7, 12.5, 7);
         assert_eq!(
             render_watch(&elf, &mut memory, &speed).unwrap(),
-            "motor.speed: f32 = 12.5\n"
+            "motor.speed: f32 = 12.5 rad/s\n"
         );
         write(&mut memory, 7, 12.5, 8);
         assert_eq!(
             render_watch(&elf, &mut memory, &speed).unwrap(),
             "motor.speed: f32 = <changed during each of 10 reads>\n"
+        );
+        // A watch without a unit shows none.
+        let output = node(&elf, &mut memory, "motor.output");
+        for name in ["end", "start"] {
+            let counter = field(&elf, &mut memory, &output, name).unwrap();
+            memory.write(counter.address, &1u32.to_le_bytes()).unwrap();
+        }
+        assert_eq!(
+            render_watch(&elf, &mut memory, &output).unwrap(),
+            "motor.output: f32 = 0.0\n"
         );
 
         let state = node(&elf, &mut memory, "motor.state");
