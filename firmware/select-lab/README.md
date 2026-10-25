@@ -15,6 +15,10 @@ Two `Param`s change the load. `SPIN` adds cycles to each iteration, and
 `WATCH_EVERY` writes the `watch!` values only every that many iterations. The
 futures read both once per 1024 iterations.
 
+A second task, `control`, waits for a signal that SysTick sends every
+millisecond, works for `CONTROL_WORK` cycles of the 64,000 in each tick, then
+yields once. It gives `tuning-studio tasks` a task that waits.
+
 ## Run
 
 ```sh
@@ -33,6 +37,28 @@ tuning-studio watch --chip STM32H723VGTx --elf $E --speed 10000 --interval 0 --c
     | python3 firmware/select-lab/check.py
 tuning-studio set --chip STM32H723VGTx --elf $E select_lab::WATCH_EVERY 64
 ```
+
+Profile the tasks for two seconds:
+
+```sh
+tuning-studio tasks --chip STM32H723VGTx --elf $E --speed 10000 --duration 2000
+```
+
+```text
+control: running 26%, run-queued 1%
+   99.1%  Suspend0 at src/main.rs:138
+    0.9%  Suspend1 at src/main.rs:141
+waves: running 44%, run-queued 75%
+  100.0%  Suspend0 at src/main.rs:126
+outside tasks: waker::wake 20%, Executor::run 6%, select_lab::settings 3%
+1105 samples in 2.00 s, 552 per second
+```
+
+`running` comes from sampling the program counter, and followed
+`CONTROL_WORK`: 0%, 26% and 76% at 0, 16,000 and 48,000 cycles. The state
+lines show the `.await` each task reached last, which includes time spent
+running toward the next one. `waker::wake` is the cost of `yield_now` waking
+`waves` on every iteration.
 
 ## Results
 

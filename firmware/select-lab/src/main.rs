@@ -5,6 +5,10 @@
 //! `.await`, which puts them in the task's future, and also publishes both with
 //! `watch!`.
 //!
+//! A second task, `control`, waits for a signal SysTick sends every millisecond,
+//! works for `CONTROL_WORK` cycles, then yields once, to give `tasks` a task
+//! that waits.
+//!
 //! `value` is always `f(phase)` with `phase = count % 1024 * 2π / 1024`, so a
 //! host can check any read of the pair.
 //!
@@ -14,9 +18,13 @@
 #![no_main]
 
 use core::f32::consts::TAU;
+use cortex_m::peripheral::syst::SystClkSource;
+use cortex_m_rt::exception;
 use embassy_executor::Spawner;
 use embassy_futures::select::select;
 use embassy_futures::yield_now;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::signal::Signal;
 use tuning_studio_api::{params, watch};
 
 params! {
@@ -25,6 +33,8 @@ params! {
     static SPIN: u32 = 0, unit = "cycles";
     /// Publish the `watch!` values every this many iterations
     static WATCH_EVERY: u32 = 1, range = 1..=u32::MAX;
+    /// Cycles `control` works per tick, at 64 MHz
+    static CONTROL_WORK: u32 = 16_000, range = 0..=60_000, unit = "cycles";
 }
 
 const STEPS: u32 = 1024;
@@ -116,6 +126,28 @@ async fn waves() {
     select(sine(), cosine()).await;
 }
 
+/// Set by SysTick every millisecond
+static TICK: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// A control loop that waits for each tick, works for `CONTROL_WORK` cycles,
+/// then yields once, so it has two `.await`s to be parked on.
+#[embassy_executor::task]
+async fn control() {
+    let mut ticks = 0u32;
+    loop {
+        TICK.wait().await;
+        ticks = ticks.wrapping_add(1);
+        cortex_m::asm::delay(CONTROL_WORK.get());
+        yield_now().await;
+        core::hint::black_box(ticks);
+    }
+}
+
+#[exception]
+fn SysTick() {
+    TICK.signal(());
+}
+
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     // SAFETY: the executor has not started the futures that read it.
@@ -125,13 +157,18 @@ async fn main(spawner: Spawner) {
     {
         *value = libm::sinf(phase(i as u32));
     }
+    // SAFETY: nothing else uses the core peripherals.
+    let mut core = unsafe { cortex_m::Peripherals::steal() };
     // Without the instruction cache, each fetch from flash waits the reset default
     // of 7 cycles.
-    // SAFETY: nothing else uses the SCB.
-    unsafe { cortex_m::Peripherals::steal() }
-        .SCB
-        .enable_icache();
+    core.SCB.enable_icache();
+    core.SYST.set_clock_source(SystClkSource::Core);
+    core.SYST.set_reload(64_000 - 1);
+    core.SYST.clear_current();
+    core.SYST.enable_interrupt();
+    core.SYST.enable_counter();
     spawner.spawn(waves().unwrap());
+    spawner.spawn(control().unwrap());
 }
 
 #[panic_handler]

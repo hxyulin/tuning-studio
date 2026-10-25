@@ -8,6 +8,7 @@ mod memory;
 mod path;
 mod session;
 mod target;
+mod tasks;
 mod value;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -86,6 +87,15 @@ enum Command {
         /// Stop after this many reads
         #[arg(long)]
         count: Option<u64>,
+    },
+    /// Sample every Embassy task while the firmware runs, then print how often
+    /// each was run-queued and which `.await` it was parked on
+    Tasks {
+        #[command(flatten)]
+        target: TargetArgs,
+        /// How long to sample, in milliseconds
+        #[arg(long, default_value_t = 1000)]
+        duration: u64,
     },
     /// Print every `Param` and `watch!` value the firmware declares with
     /// tuning-studio-api
@@ -312,6 +322,22 @@ fn main() -> Result<()> {
                 .collect::<Result<Vec<_>>>()?;
             let interval = Duration::from_millis(interval);
             watch(elf.as_ref(), &mut memory, &locations, interval, count)?;
+        }
+        Command::Tasks { target, duration } => {
+            if let Some(session) = target.probe.session()? {
+                return daemon::request(
+                    session,
+                    words("tasks", ["--duration".into(), duration.to_string()]),
+                );
+            }
+            let (probe, elf) = target.attach()?;
+            let elf = elf.ok_or_else(|| anyhow!("pass --elf to find the tasks"))?;
+            let mut session = probe.session.lock();
+            let mut memory = probe.memory(&mut session)?;
+            print!(
+                "{}",
+                tasks::profile(&elf, &mut memory, Duration::from_millis(duration))?
+            );
         }
         Command::Values { target } => {
             if let Some(session) = target.probe.session()? {

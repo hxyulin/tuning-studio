@@ -80,6 +80,13 @@ enum SessionCommand {
     },
     /// Stop the watches with these numbers, or all of them
     Unwatch { ids: Vec<u32> },
+    /// Sample every Embassy task, then print how often each was run-queued and
+    /// where it was parked. The session pauses its other work while sampling.
+    Tasks {
+        /// How long to sample, in milliseconds
+        #[arg(long, default_value_t = 1000)]
+        duration: u64,
+    },
     /// Print every `Param` and `watch!` value
     Values,
     /// Write one value, then read it back. A `Param` changes through the
@@ -531,6 +538,14 @@ fn handle(
             let location = path::locate(elf, &mut memory, &location)?;
             *out += &crate::set(elf, &mut memory, &location, &value)?;
             *out += &crate::read(elf, &mut memory, &location)?;
+        }
+        SessionCommand::Tasks { duration } => {
+            let elf = elf.ok_or_else(|| anyhow!("the session has no ELF"))?;
+            *out += &crate::tasks::profile(
+                elf,
+                &mut target.memory(&mut session)?,
+                Duration::from_millis(duration),
+            )?;
         }
         SessionCommand::Values => {
             let elf = elf.ok_or_else(|| anyhow!("the session has no ELF"))?;
