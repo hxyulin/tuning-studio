@@ -7,7 +7,7 @@ the debug port while the core runs. Attaching and detaching halt the core for
 about 20 ms.
 
 ```sh
-cargo install --git https://github.com/hxyulin/tuning-tools tuning-studio-cli --locked
+cargo install --git https://github.com/hxyulin/tuning-studio tuning-studio-cli --locked
 ```
 
 ## Sessions

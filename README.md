@@ -53,7 +53,7 @@ tune_lab::SETPOINT: f32 = 104.0 rad/s (target 120.0, default 100.0, -300.0 to 30
 Install [Rust](https://rustup.rs/), then the CLI from this repository:
 
 ```sh
-cargo install --git https://github.com/hxyulin/tuning-tools tuning-studio-cli --locked
+cargo install --git https://github.com/hxyulin/tuning-studio tuning-studio-cli --locked
 ```
 
 The installed command is `tuning-studio`. On Linux, probe-rs needs
@@ -91,7 +91,7 @@ See the [CLI README](crates/tuning-studio-cli) for every command.
 
 ```toml
 [dependencies]
-tuning-studio-api = { git = "https://github.com/hxyulin/tuning-tools" }
+tuning-studio-api = { git = "https://github.com/hxyulin/tuning-studio" }
 ```
 
 ```rust

@@ -8,7 +8,7 @@ Embassy tasks. It parses a firmware image without opening a probe.
 
 ```toml
 [dependencies]
-tuning-studio-dwarf = { git = "https://github.com/hxyulin/tuning-tools" }
+tuning-studio-dwarf = { git = "https://github.com/hxyulin/tuning-studio" }
 ```
 
 The Rust library name is **`studio_dwarf`**.
@@ -46,17 +46,17 @@ left to the caller.
 
 ## Development
 
-From the [repository](https://github.com/hxyulin/tuning-tools):
+From the [repository](https://github.com/hxyulin/tuning-studio):
 
 ```sh
 cargo test -p tuning-studio-dwarf
 STUDIO_DWARF_ELF=path/to/firmware cargo test -p tuning-studio-dwarf -- --ignored
 ```
 
-See the [fixture guide](https://github.com/hxyulin/tuning-tools/blob/main/crates/studio-dwarf/tests/fixtures/README.md)
+See the [fixture guide](https://github.com/hxyulin/tuning-studio/blob/main/crates/studio-dwarf/tests/fixtures/README.md)
 for C, C++ and Rust examples, including the runnable inspector lab.
 The parser originated in `datavis-rs`; provenance is recorded in the source.
 
-Part of [Tuning Studio](https://github.com/hxyulin/tuning-tools). Host-only (`std`),
+Part of [Tuning Studio](https://github.com/hxyulin/tuning-studio). Host-only (`std`),
 MIT licensed. The API changes between versions; use the same version as the
 other Tuning Studio crates.

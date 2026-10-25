@@ -12,7 +12,7 @@ version = "0.2.0"
 edition = "2024"
 rust-version = "1.99.1"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/hxyulin/tuning-tools"
+repository = "https://github.com/hxyulin/tuning-studio"
 authors = ["hxyulin <hxyulin@proton.me>"]
 
 [workspace.dependencies]

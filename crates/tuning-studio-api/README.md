@@ -48,7 +48,7 @@ writer, so no write is lost or torn. The CLI also refuses raw writes into a
 
 ```toml
 [dependencies]
-tuning-studio-api = { git = "https://github.com/hxyulin/tuning-tools" }
+tuning-studio-api = { git = "https://github.com/hxyulin/tuning-studio" }
 ```
 
 ```rust
