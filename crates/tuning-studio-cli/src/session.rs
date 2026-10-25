@@ -1,28 +1,43 @@
 //! One attachment that takes a command per line on stdin. The main thread owns the
-//! probe: it runs each command, prints due watches, reports when the core halts or
-//! resumes, and drives the GDB server. A second thread only reads stdin.
+//! probe: it runs each command, prints due watches and RTT logs, reports when the
+//! core halts or resumes, and drives the GDB server. A second thread only reads stdin.
 //!
-//! The session ends on `quit`, end of input or Ctrl-C. It resumes a halted core,
-//! and detaching clears the breakpoints.
+//! The session ends on `quit` or Ctrl-C, and on end of input unless it streams logs.
+//! It resumes a halted core, and detaching clears the breakpoints.
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
-use probe_rs::CoreStatus;
+use probe_rs::{CoreStatus, VectorCatchCondition};
 use std::io::{BufRead, Write};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
-use studio_dwarf::ElfInfo;
+use studio_dwarf::{ElfInfo, ElfParser};
 
 use crate::debug::{self, Breakpoints};
+use crate::flash;
 use crate::gdb;
+use crate::logs::Logs;
 use crate::path::{self, Location};
 use crate::target::Target;
 
 /// How often the session checks whether the core has halted
 const STATUS_INTERVAL: Duration = Duration::from_millis(50);
+/// How often the session reads RTT
+const LOG_INTERVAL: Duration = Duration::from_millis(10);
+
+pub struct Options {
+    /// Firmware ELF, for symbols, logs and `flash`
+    pub elf: Option<PathBuf>,
+    /// Serve GDB on this address
+    pub gdb: Option<SocketAddr>,
+    /// Print RTT logs, halt on a HardFault so its cause stays visible, and keep
+    /// running after the end of input
+    pub logs: bool,
+}
 
 #[derive(Parser)]
 #[command(
@@ -75,6 +90,18 @@ enum SessionCommand {
     },
     /// Clear the breakpoints with these numbers, or all of them
     Delete { ids: Vec<u32> },
+    /// Reset the core and let it run
+    Reset {
+        /// Halt at the reset vector instead
+        #[arg(long)]
+        halt: bool,
+    },
+    /// Program the ELF again, which may have been rebuilt, then reset
+    Flash {
+        /// Read the flash back afterwards
+        #[arg(long)]
+        verify: bool,
+    },
     /// Print the core status, breakpoints and watches
     Status,
     /// Detach and exit
@@ -83,15 +110,17 @@ enum SessionCommand {
 
 struct Watch {
     id: u32,
-    text: String,
+    texts: Vec<String>,
     locations: Vec<Location>,
     interval: Duration,
     next: Instant,
     remaining: Option<u64>,
 }
 
-struct State<'e> {
-    elf: Option<&'e ElfInfo>,
+struct State {
+    elf_path: Option<PathBuf>,
+    elf: Option<ElfInfo>,
+    logs: Option<Logs>,
     start: Instant,
     watches: Vec<Watch>,
     next_watch: u32,
@@ -99,7 +128,7 @@ struct State<'e> {
     status: Option<CoreStatus>,
 }
 
-pub fn run(target: &Target, elf: Option<&ElfInfo>, gdb_address: Option<SocketAddr>) -> Result<()> {
+pub fn run(target: &Target, elf: Option<ElfInfo>, options: Options) -> Result<()> {
     let stop = Arc::new(AtomicBool::new(false));
     let handler = Arc::clone(&stop);
     ctrlc::set_handler(move || handler.store(true, Ordering::Relaxed))?;
@@ -111,16 +140,37 @@ pub fn run(target: &Target, elf: Option<&ElfInfo>, gdb_address: Option<SocketAdd
             }
         }
     });
+    // A signal that lands during a USB transfer makes macOS fail the transfer, and
+    // the probe stays out of step afterwards. Block SIGINT here so one of the threads
+    // above takes it; they inherited the mask from before this call.
+    block_sigint();
 
-    let mut server = gdb_address
+    let mut server = options
+        .gdb
         .map(|address| gdb::Server::new(&target.session, vec![0], &[address]))
         .transpose()
         .map_err(|e| anyhow!("could not start the GDB server: {e:#}"))?;
-    if let Some(address) = gdb_address {
+    if let Some(address) = options.gdb {
         println!("GDB server listening on {address}");
     }
+    let logs = match (&options.elf, options.logs) {
+        (Some(path), true) => Logs::new(path)?,
+        _ => None,
+    };
+    if options.logs {
+        target
+            .session
+            .lock()
+            .core(0)?
+            .enable_vector_catch(VectorCatchCondition::HardFault)?;
+    }
+    if options.logs && logs.is_none() {
+        println!("the ELF has no RTT control block, so there are no logs to show");
+    }
     let mut state = State {
+        elf_path: options.elf,
         elf,
+        logs,
         start: Instant::now(),
         watches: Vec::new(),
         next_watch: 0,
@@ -128,9 +178,22 @@ pub fn run(target: &Target, elf: Option<&ElfInfo>, gdb_address: Option<SocketAdd
         status: None,
     };
     let mut next_status = Instant::now();
+    let mut next_logs = Instant::now();
+    let mut input_open = true;
 
     while !stop.load(Ordering::Relaxed) {
         let now = Instant::now();
+        // Logs first, so a panic message prints before the halt it causes.
+        if let Some(logs) = &mut state.logs
+            && now >= next_logs
+        {
+            let text = logs.poll(&mut target.session.lock());
+            match text {
+                Ok(text) => print!("{text}"),
+                Err(e) => println!("error: could not read RTT: {e:#}"),
+            }
+            next_logs = now + LOG_INTERVAL;
+        }
         if now >= next_status {
             report_status(target, &mut state)?;
             next_status = now + STATUS_INTERVAL;
@@ -141,6 +204,9 @@ pub fn run(target: &Target, elf: Option<&ElfInfo>, gdb_address: Option<SocketAdd
             .iter()
             .map(|w| w.next)
             .fold(next_status, Instant::min);
+        if state.logs.is_some() {
+            wake = wake.min(next_logs);
+        }
         if let Some(server) = &mut server {
             let connected = server.is_connected();
             let wait = server
@@ -166,6 +232,10 @@ pub fn run(target: &Target, elf: Option<&ElfInfo>, gdb_address: Option<SocketAdd
         std::io::stdout().flush()?;
 
         let timeout = wake.saturating_duration_since(Instant::now());
+        if !input_open {
+            std::thread::sleep(timeout);
+            continue;
+        }
         match input.recv_timeout(timeout) {
             Ok(line) => {
                 let line = line?;
@@ -178,6 +248,8 @@ pub fn run(target: &Target, elf: Option<&ElfInfo>, gdb_address: Option<SocketAdd
                 next_status = Instant::now();
             }
             Err(RecvTimeoutError::Timeout) => {}
+            // Logs keep streaming without input, as `cargo run` with no terminal needs.
+            Err(RecvTimeoutError::Disconnected) if state.logs.is_some() => input_open = false,
             Err(RecvTimeoutError::Disconnected) => break,
         }
     }
@@ -212,9 +284,29 @@ fn handle(target: &Target, state: &mut State, line: &str) -> Result<bool> {
             return Ok(false);
         }
     };
-    let elf = state.elf;
     let mut session = target.session.lock();
     match command {
+        SessionCommand::Reset { halt } => {
+            if let Some(logs) = &mut state.logs {
+                logs.restart(&mut session)?;
+            }
+            flash::reset(&mut session, halt)?;
+            state.status = None;
+            return Ok(false);
+        }
+        SessionCommand::Flash { verify } => {
+            let path = state
+                .elf_path
+                .clone()
+                .ok_or_else(|| anyhow!("flash needs an ELF"))?;
+            reflash(target, &mut session, state, &path, verify)?;
+            return Ok(false);
+        }
+        _ => {}
+    }
+    let elf = state.elf.as_ref();
+    match command {
+        SessionCommand::Reset { .. } | SessionCommand::Flash { .. } => unreachable!(),
         SessionCommand::Read { locations } => {
             let mut memory = target.memory(&mut session)?;
             for location in &locations {
@@ -235,7 +327,7 @@ fn handle(target: &Target, state: &mut State, line: &str) -> Result<bool> {
             state.next_watch += 1;
             let watch = Watch {
                 id: state.next_watch,
-                text: locations.join(" "),
+                texts: locations,
                 locations: resolved,
                 interval: Duration::from_millis(interval.max(1)),
                 next: Instant::now(),
@@ -244,7 +336,7 @@ fn handle(target: &Target, state: &mut State, line: &str) -> Result<bool> {
             println!(
                 "watch {}: {} every {} ms",
                 watch.id,
-                watch.text,
+                watch.texts.join(" "),
                 watch.interval.as_millis()
             );
             state.watches.push(watch);
@@ -308,7 +400,7 @@ fn handle(target: &Target, state: &mut State, line: &str) -> Result<bool> {
                 println!(
                     "watch {}: {} every {} ms",
                     watch.id,
-                    watch.text,
+                    watch.texts.join(" "),
                     watch.interval.as_millis()
                 );
             }
@@ -324,7 +416,8 @@ fn report_status(target: &Target, state: &mut State) -> Result<()> {
     let status = debug::status(&mut session)?;
     if state.status != Some(status) {
         state.status = Some(status);
-        let text = debug::describe_status(state.elf, &mut session, &state.breakpoints, status)?;
+        let text =
+            debug::describe_status(state.elf.as_ref(), &mut session, &state.breakpoints, status)?;
         println!("{text}");
     }
     Ok(())
@@ -336,7 +429,7 @@ fn run_watches(target: &Target, state: &mut State) {
     if !state.watches.iter().any(|w| w.next <= now) {
         return;
     }
-    let elf = state.elf;
+    let elf = state.elf.as_ref();
     let elapsed = state.start.elapsed().as_secs_f64();
     let mut session = target.session.lock();
     let mut memory = match target.memory(&mut session) {
@@ -376,4 +469,66 @@ fn run_watches(target: &Target, state: &mut State) {
         }
         true
     });
+}
+
+/// Program `path`, reload its symbols and logs, and reset. Breakpoints are cleared,
+/// since the functions may have moved, and watches are resolved again.
+fn reflash(
+    target: &Target,
+    session: &mut probe_rs::Session,
+    state: &mut State,
+    file: &std::path::Path,
+    verify: bool,
+) -> Result<()> {
+    let elf =
+        ElfParser::parse(file).with_context(|| format!("could not parse {}", file.display()))?;
+    let logs = if state.logs.is_some() {
+        Logs::new(file)?
+    } else {
+        None
+    };
+    for breakpoint in state.breakpoints.delete(session, &[])? {
+        println!("breakpoint {} cleared", breakpoint.id);
+    }
+    flash::flash(session, file, verify, false)?;
+    state.elf = Some(elf);
+    state.logs = logs;
+    if let Some(logs) = &mut state.logs {
+        logs.restart(session)?;
+    }
+    flash::reset(session, false)?;
+    state.status = None;
+    let mut memory = target.memory(session)?;
+    let elf = state.elf.as_ref();
+    state.watches.retain_mut(|watch| {
+        let located = watch
+            .texts
+            .iter()
+            .map(|text| path::locate(elf, &mut memory, text))
+            .collect::<Result<Vec<_>>>();
+        match located {
+            Ok(locations) => {
+                watch.locations = locations;
+                true
+            }
+            Err(e) => {
+                println!("error: watch {} stopped: {e:#}", watch.id);
+                false
+            }
+        }
+    });
+    Ok(())
+}
+
+/// Block SIGINT on the calling thread. Call it after `ctrlc::set_handler`, whose
+/// thread then takes the signal.
+pub fn block_sigint() {
+    // SAFETY: the set is initialised by sigemptyset before use, and
+    // pthread_sigmask only changes this thread's mask.
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGINT);
+        libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+    }
 }

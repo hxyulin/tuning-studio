@@ -1,0 +1,22 @@
+[package]
+name = "log-lab"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+
+# Standalone firmware, not part of the host workspace.
+[workspace]
+
+[dependencies]
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7"
+defmt = "1"
+panic-probe = { version = "1", features = ["print-defmt"] }
+rtt-target = { version = "0.6", features = ["defmt"] }
+
+[profile.release]
+debug = 2
+opt-level = "s"
+lto = true
+codegen-units = 1

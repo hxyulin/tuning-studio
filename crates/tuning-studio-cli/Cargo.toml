@@ -16,9 +16,11 @@ path = "src/main.rs"
 anyhow = "1"
 clap = { version = "4.6", features = ["derive"] }
 ctrlc = "3.5"
+defmt-decoder = "1"
 # The version probe-rs-tools 0.32.0 pins for the GDB server in src/gdb.
 gdbstub = "=0.7.8"
 itertools = "0.15"
+libc = "0.2"
 parking_lot = "0.12"
 probe-rs = "0.32"
 probe-rs-target = "0.32"

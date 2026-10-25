@@ -497,9 +497,16 @@ impl ElfParser {
             .collect();
 
         for symbol in &mut info.symbols {
-            let containing = sections.iter().find(|(addr, size, _, _)| {
-                symbol.address >= *addr && symbol.address < addr + (*size).max(1)
-            });
+            // The symbol's own section first: an empty `.data` can share its start
+            // address with `.bss`.
+            let containing = sections
+                .iter()
+                .find(|(_, _, name, _)| !symbol.section.is_empty() && *name == symbol.section)
+                .or_else(|| {
+                    sections.iter().find(|(addr, size, _, _)| {
+                        symbol.address >= *addr && symbol.address < addr + size
+                    })
+                });
             match containing {
                 Some((_, _, name, write)) => {
                     if symbol.section.is_empty() {

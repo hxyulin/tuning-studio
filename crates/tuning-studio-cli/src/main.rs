@@ -1,5 +1,7 @@
 mod debug;
+mod flash;
 mod gdb;
+mod logs;
 mod memory;
 mod path;
 mod session;
@@ -75,6 +77,62 @@ enum Command {
         #[arg(long, num_args = 0..=1, default_missing_value = "127.0.0.1:1337")]
         gdb: Option<SocketAddr>,
     },
+    /// Flash and reset the firmware, then print its RTT logs and take session
+    /// commands on stdin until Ctrl-C. Works as a Cargo runner.
+    Run {
+        #[command(flatten)]
+        probe: ProbeArgs,
+        /// Firmware ELF
+        elf: PathBuf,
+        /// Read the flash back after programming
+        #[arg(long)]
+        verify: bool,
+        /// Also serve GDB on this address; `--gdb` alone uses 127.0.0.1:1337
+        #[arg(long, num_args = 0..=1, default_missing_value = "127.0.0.1:1337")]
+        gdb: Option<SocketAddr>,
+    },
+    /// Print the RTT logs of running firmware and take session commands on stdin,
+    /// without flashing or resetting
+    Attach {
+        #[command(flatten)]
+        probe: ProbeArgs,
+        /// Firmware ELF
+        elf: PathBuf,
+        /// Also serve GDB on this address; `--gdb` alone uses 127.0.0.1:1337
+        #[arg(long, num_args = 0..=1, default_missing_value = "127.0.0.1:1337")]
+        gdb: Option<SocketAddr>,
+    },
+    /// Program an ELF into flash, then reset
+    Flash {
+        #[command(flatten)]
+        probe: ProbeArgs,
+        /// Firmware ELF
+        elf: PathBuf,
+        /// Read the flash back after programming
+        #[arg(long)]
+        verify: bool,
+        /// Erase the whole chip rather than only the sectors the ELF uses
+        #[arg(long)]
+        chip_erase: bool,
+        /// Halt at the reset vector instead of running
+        #[arg(long)]
+        halt: bool,
+    },
+    /// Erase all flash
+    Erase {
+        #[command(flatten)]
+        probe: ProbeArgs,
+    },
+    /// Reset the target
+    Reset {
+        #[command(flatten)]
+        probe: ProbeArgs,
+        /// Halt at the reset vector instead of running
+        #[arg(long)]
+        halt: bool,
+    },
+    /// List the connected debug probes
+    List,
 }
 
 #[derive(Args)]
@@ -82,6 +140,12 @@ struct TargetArgs {
     /// Firmware ELF with DWARF debug information, needed for symbol names
     #[arg(long)]
     elf: Option<PathBuf>,
+    #[command(flatten)]
+    probe: ProbeArgs,
+}
+
+#[derive(Args)]
+struct ProbeArgs {
     /// probe-rs chip name, such as `STM32H723VGTx`
     #[arg(long)]
     chip: String,
@@ -93,20 +157,24 @@ struct TargetArgs {
     speed: u32,
 }
 
+impl ProbeArgs {
+    fn attach(&self) -> Result<target::Target> {
+        target::Target::attach(&self.chip, self.probe.as_deref(), self.speed, false)
+    }
+}
+
 impl TargetArgs {
     fn attach(&self) -> Result<target::Target> {
-        target::Target::attach(&self.chip, self.probe.as_deref(), self.speed)
+        self.probe.attach()
     }
 
     fn elf(&self) -> Result<Option<ElfInfo>> {
-        self.elf
-            .as_ref()
-            .map(|path| {
-                ElfParser::parse(path)
-                    .with_context(|| format!("could not parse {}", path.display()))
-            })
-            .transpose()
+        self.elf.as_deref().map(parse_elf).transpose()
     }
+}
+
+fn parse_elf(path: &std::path::Path) -> Result<ElfInfo> {
+    ElfParser::parse(path).with_context(|| format!("could not parse {}", path.display()))
 }
 
 fn main() -> Result<()> {
@@ -154,8 +222,68 @@ fn main() -> Result<()> {
         Command::Session { target, gdb } => {
             let elf = target.elf()?;
             let probe = target.attach()?;
-            session::run(&probe, elf.as_ref(), gdb)?;
+            let options = session::Options {
+                elf: target.elf,
+                gdb,
+                logs: false,
+            };
+            session::run(&probe, elf, options)?;
         }
+        Command::Run {
+            probe,
+            elf,
+            verify,
+            gdb,
+        } => {
+            let info = parse_elf(&elf)?;
+            let target = probe.attach()?;
+            {
+                let mut session = target.session.lock();
+                flash::flash(&mut session, &elf, verify, false)?;
+                if let Some(mut logs) = logs::Logs::new(&elf)? {
+                    logs.restart(&mut session)?;
+                }
+                flash::reset(&mut session, false)?;
+            }
+            let options = session::Options {
+                elf: Some(elf),
+                gdb,
+                logs: true,
+            };
+            session::run(&target, Some(info), options)?;
+        }
+        Command::Attach { probe, elf, gdb } => {
+            let info = parse_elf(&elf)?;
+            let target = probe.attach()?;
+            let options = session::Options {
+                elf: Some(elf),
+                gdb,
+                logs: true,
+            };
+            session::run(&target, Some(info), options)?;
+        }
+        Command::Flash {
+            probe,
+            elf,
+            verify,
+            chip_erase,
+            halt,
+        } => {
+            let target = probe.attach()?;
+            let mut session = target.session.lock();
+            flash::flash(&mut session, &elf, verify, chip_erase)?;
+            flash::reset(&mut session, halt)?;
+        }
+        Command::Erase { probe } => {
+            let target =
+                target::Target::attach(&probe.chip, probe.probe.as_deref(), probe.speed, true)?;
+            flash::erase(&mut target.session.lock())?;
+        }
+        Command::Reset { probe, halt } => {
+            let target = probe.attach()?;
+            flash::reset(&mut target.session.lock(), halt)?;
+        }
+        Command::List => target::list(),
     }
     Ok(())
 }
@@ -173,6 +301,7 @@ fn watch(
     let stop = Arc::new(AtomicBool::new(false));
     let handler = Arc::clone(&stop);
     ctrlc::set_handler(move || handler.store(true, Ordering::Relaxed))?;
+    session::block_sigint();
     let terminal = std::io::stdout().is_terminal();
     let start = Instant::now();
     let mut next = start;

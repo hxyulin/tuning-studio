@@ -26,8 +26,14 @@ pub struct Target {
 
 impl Target {
     /// Attach without resetting. `probe` is `VID:PID` or `VID:PID:SERIAL`; `None`
-    /// takes the only probe connected.
-    pub fn attach(chip: &str, probe: Option<&str>, speed_khz: u32) -> Result<Self> {
+    /// takes the only probe connected. `erase_all` permits a full chip erase, which
+    /// some chips need to unlock.
+    pub fn attach(
+        chip: &str,
+        probe: Option<&str>,
+        speed_khz: u32,
+        erase_all: bool,
+    ) -> Result<Self> {
         let lister = Lister::new();
         let mut probe = match probe {
             Some(selector) => {
@@ -41,8 +47,13 @@ impl Target {
             },
         };
         probe.set_speed(speed_khz)?;
+        let permissions = if erase_all {
+            Permissions::new().allow_erase_all()
+        } else {
+            Permissions::default()
+        };
         let session = probe
-            .attach(chip, Permissions::default())
+            .attach(chip, permissions)
             .with_context(|| format!("could not attach to {chip}"))?;
         let ap = core_memory_ap(&session)?;
         let nvm = session
@@ -70,6 +81,25 @@ impl Target {
             nvm: self.nvm.clone(),
             snapshot: None,
         })
+    }
+}
+
+/// Print each connected probe with the selector `--probe` takes.
+pub fn list() {
+    let probes = Lister::new().list_all();
+    if probes.is_empty() {
+        println!("no debug probes found");
+    }
+    for probe in probes {
+        let serial = probe
+            .serial_number
+            .as_deref()
+            .map(|serial| format!(":{serial}"))
+            .unwrap_or_default();
+        println!(
+            "{:04x}:{:04x}{serial}  {}",
+            probe.vendor_id, probe.product_id, probe.identifier
+        );
     }
 }
 
