@@ -21,6 +21,7 @@ mod variables;
 pub use status::{DwarfDiagnostics, VariableStatus};
 use variables::{DeferredVariable, PendingSymbol, VariableInfo};
 
+use super::error::Result;
 use super::type_table::TypeTable;
 use super::types::{DwarfTypeKey, GlobalTypeKey, TypeDef, TypeId};
 use gimli::{
@@ -73,9 +74,8 @@ type Reader<'a> = EndianSlice<'a, RunTimeEndian>;
 
 impl<'a> DwarfParser<'a, Reader<'a>> {
     /// Parse DWARF info from raw bytes
-    pub fn parse_bytes(data: &'a [u8]) -> Result<DwarfParseResult, String> {
-        let file =
-            object::File::parse(data).map_err(|e| format!("Failed to parse object: {}", e))?;
+    pub fn parse_bytes(data: &'a [u8]) -> Result<DwarfParseResult> {
+        let file = object::File::parse(data)?;
 
         let endian = if file.is_little_endian() {
             RunTimeEndian::Little
@@ -84,7 +84,7 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
         };
 
         // Load DWARF sections
-        let load_section = |id: gimli::SectionId| -> Result<Cow<[u8]>, gimli::Error> {
+        let load_section = |id: gimli::SectionId| -> std::result::Result<Cow<[u8]>, gimli::Error> {
             Ok(file
                 .section_by_name(id.name())
                 .and_then(|s| s.data().ok())
@@ -93,8 +93,7 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
         };
 
         let dwarf_sections: gimli::DwarfSections<Cow<[u8]>> =
-            gimli::DwarfSections::load(load_section)
-                .map_err(|e| format!("Failed to load DWARF: {}", e))?;
+            gimli::DwarfSections::load(load_section)?;
 
         let dwarf = dwarf_sections.borrow(|section| EndianSlice::new(section, endian));
 
@@ -113,18 +112,12 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
     }
 
     /// Parse all compilation units
-    fn parse_all_units(&mut self) -> Result<(), String> {
+    fn parse_all_units(&mut self) -> Result<()> {
         let mut units = self.dwarf.units();
         let mut unit_index = 0usize;
 
-        while let Some(header) = units
-            .next()
-            .map_err(|e| format!("Failed to read DWARF unit: {}", e))?
-        {
-            let unit = self
-                .dwarf
-                .unit(header)
-                .map_err(|e| format!("Failed to parse DWARF unit: {}", e))?;
+        while let Some(header) = units.next()? {
+            let unit = self.dwarf.unit(header)?;
 
             self.parse_unit(&unit, unit_index)?;
             unit_index += 1;
@@ -134,7 +127,7 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
     }
 
     /// Parse a single compilation unit
-    fn parse_unit(&mut self, unit: &Unit<Reader<'a>>, unit_index: usize) -> Result<(), String> {
+    fn parse_unit(&mut self, unit: &Unit<Reader<'a>>, unit_index: usize) -> Result<()> {
         self.unit_is_rust = unit
             .entries_tree(None)
             .ok()
@@ -146,10 +139,7 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
 
         let mut entries = unit.entries();
 
-        while let Some(entry) = entries
-            .next_dfs()
-            .map_err(|e| format!("Failed to read DWARF entry: {}", e))?
-        {
+        while let Some(entry) = entries.next_dfs()? {
             self.parse_entry(unit, unit_index, entry)?;
         }
 
@@ -162,7 +152,7 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
         unit: &Unit<Reader<'a>>,
         unit_index: usize,
         entry: &DebuggingInformationEntry<Reader<'a>>,
-    ) -> Result<(), String> {
+    ) -> Result<()> {
         let offset: usize = entry.offset().0.into_u64() as usize;
         let key = DwarfTypeKey::new(unit_index, offset);
 

@@ -17,22 +17,35 @@ pub struct TraceSnapshot {
     pub incomplete: u32,
     pub events: Vec<TraceEvent>,
 }
-pub fn decode(bytes: &[u8]) -> Result<TraceSnapshot, String> {
+
+/// Why a trace buffer could not be decoded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum TraceError {
+    #[error("short trace read")]
+    ShortRead,
+    #[error("unsupported task trace format")]
+    UnsupportedFormat,
+    #[error("invalid trace capacity")]
+    InvalidCapacity,
+}
+
+pub fn decode(bytes: &[u8]) -> Result<TraceSnapshot, TraceError> {
     let word = |offset: usize| {
         bytes
             .get(offset..offset + 4)
             .and_then(|b| b.try_into().ok())
             .map(u32::from_le_bytes)
-            .ok_or("short trace read".to_string())
+            .ok_or(TraceError::ShortRead)
     };
     if word(0)? != 0x53545452 || word(4)? != 1 {
-        return Err("unsupported task trace format".into());
+        return Err(TraceError::UnsupportedFormat);
     }
     let capacity = word(8)?;
     let clock_hz = word(12)?;
     let head = word(16)?;
     if capacity == 0 || capacity > 8192 || bytes.len() != 20 + capacity as usize * 24 {
-        return Err("invalid trace capacity".into());
+        return Err(TraceError::InvalidCapacity);
     }
     let mut events = Vec::new();
     let mut incomplete = 0;

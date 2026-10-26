@@ -256,7 +256,22 @@ impl TargetArgs {
 }
 
 fn parse_elf(path: &Path) -> Result<ElfInfo> {
-    ElfParser::parse(path).with_context(|| format!("could not parse {}", path.display()))
+    let elf =
+        ElfParser::parse(path).with_context(|| format!("could not parse {}", path.display()))?;
+    if let Some(warning) = dwarf_warning(&elf) {
+        eprintln!("{warning}");
+    }
+    Ok(elf)
+}
+
+/// The symbols of an ELF load without its types when the DWARF does not parse.
+fn dwarf_warning(elf: &ElfInfo) -> Option<String> {
+    let error = elf.dwarf_error()?;
+    let cause = std::error::Error::source(error).map_or(String::new(), |e| format!(": {e}"));
+    Some(format!(
+        "warning: {}: {error}{cause}; symbols have no type information",
+        elf.path
+    ))
 }
 
 fn main() -> Result<()> {

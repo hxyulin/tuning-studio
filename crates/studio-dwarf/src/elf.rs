@@ -161,6 +161,8 @@ pub struct ElfInfo {
     type_table: SharedTypeTable,
     /// Diagnostic statistics from DWARF parsing
     diagnostics: DwarfDiagnostics,
+    /// Why the debug info could not be parsed; the symbols are still usable
+    dwarf_error: Option<Arc<Error>>,
 }
 
 impl ElfInfo {
@@ -177,6 +179,7 @@ impl ElfInfo {
             symbols_by_address: HashMap::new(),
             type_table: Arc::new(TypeTable::new()),
             diagnostics: DwarfDiagnostics::default(),
+            dwarf_error: None,
         }
     }
 
@@ -198,6 +201,12 @@ impl ElfInfo {
     /// Get a reference to the shared type table
     pub fn type_table(&self) -> &SharedTypeTable {
         &self.type_table
+    }
+
+    /// Why the DWARF failed to parse, or `None` when it parsed or the file has none.
+    /// The symbol table is still filled in either case.
+    pub fn dwarf_error(&self) -> Option<&Error> {
+        self.dwarf_error.as_deref()
     }
 
     /// Get DWARF parsing diagnostics
@@ -441,7 +450,7 @@ impl ElfParser {
 
     /// Parse ELF data from bytes
     pub fn parse_bytes(data: &[u8], path: &str) -> Result<ElfInfo> {
-        let file = object::File::parse(data).map_err(|e| Error::Elf(e.to_string()))?;
+        let file = object::File::parse(data)?;
 
         let mut info = ElfInfo::new(path);
 
@@ -471,6 +480,7 @@ impl ElfParser {
         // Try to parse DWARF debug info
         if let Err(e) = Self::parse_dwarf(data, &file, &mut info) {
             tracing::debug!("DWARF parsing failed or not available: {}", e);
+            info.dwarf_error = Some(Arc::new(e));
         }
 
         Self::assign_sections(&file, &mut info);
@@ -527,7 +537,7 @@ impl ElfParser {
     /// Parse DWARF debug information and populate the type table
     fn parse_dwarf(data: &[u8], _file: &object::File, info: &mut ElfInfo) -> Result<()> {
         // Use the new DwarfParser to parse types and symbols
-        let result = DwarfParser::parse_bytes(data).map_err(Error::Dwarf)?;
+        let result = DwarfParser::parse_bytes(data)?;
 
         // Set the type table and diagnostics
         info.set_type_table(result.type_table);
@@ -843,6 +853,12 @@ mod tests {
         assert!(!is_anonymous_constant("anonymous_counter"));
         let elf = ElfParser::parse_bytes(TEST_ARM_ELF, "test_arm.elf").unwrap();
         assert!(elf.symbols.iter().all(|s| !s.mangled_name.starts_with('$')));
+    }
+
+    #[test]
+    fn parsable_debug_info_leaves_no_dwarf_error() {
+        let elf = ElfParser::parse_bytes(TEST_ARM_ELF, "test_arm.elf").unwrap();
+        assert!(elf.dwarf_error().is_none());
     }
 
     #[test]

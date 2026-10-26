@@ -689,6 +689,9 @@ fn reflash(
     let elf =
         ElfParser::parse(file).with_context(|| format!("could not parse {}", file.display()))?;
     crate::api::forget_units();
+    if let Some(warning) = crate::dwarf_warning(&elf) {
+        writeln!(out, "{warning}")?;
+    }
     let logs = Logs::new(file)?;
     for breakpoint in state.breakpoints.delete(session, &[])? {
         writeln!(out, "breakpoint {} cleared", breakpoint.id)?;

@@ -78,6 +78,22 @@ pub enum StatsError {
     Layout(String),
 }
 
+/// Why a read of the task counters could not be decoded.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum DecodeError {
+    #[error("{0}")]
+    Offset(#[from] std::num::TryFromIntError),
+    #[error("short read")]
+    ShortRead,
+    #[error("not started yet")]
+    NotStarted,
+    #[error("magic is {0:#010x}; the firmware has not reset it")]
+    BadMagic(u32),
+    #[error("format version {0}, this tool reads {STATS_VERSION}")]
+    BadVersion(u32),
+}
+
 impl StatsLayout {
     /// The firmware's task counters, or `None` when it does not link `rm-task-stats`.
     pub fn find(elf: &ElfInfo) -> Result<Option<Self>, StatsError> {
@@ -143,13 +159,13 @@ impl StatsLayout {
     }
 
     /// Decode what [`Self::region`] read.
-    pub fn decode(&self, bytes: &[u8]) -> Result<StatsReading, String> {
-        let word = |at: u64| -> Result<u32, String> {
-            let at = usize::try_from(at).map_err(|e| e.to_string())?;
+    pub fn decode(&self, bytes: &[u8]) -> Result<StatsReading, DecodeError> {
+        let word = |at: u64| -> Result<u32, DecodeError> {
+            let at = usize::try_from(at)?;
             let b: [u8; 4] = bytes
                 .get(at..at + 4)
                 .and_then(|b| b.try_into().ok())
-                .ok_or("short read")?;
+                .ok_or(DecodeError::ShortRead)?;
             Ok(if self.little_endian {
                 u32::from_le_bytes(b)
             } else {
@@ -159,16 +175,14 @@ impl StatsLayout {
         let magic = word(self.magic)?;
         if magic != STATS_MAGIC {
             return Err(if magic == 0 {
-                "not started yet".into()
+                DecodeError::NotStarted
             } else {
-                format!("magic is {magic:#010x}; the firmware has not reset it")
+                DecodeError::BadMagic(magic)
             });
         }
         let version = word(self.version)?;
         if version != STATS_VERSION {
-            return Err(format!(
-                "format version {version}, this tool reads {STATS_VERSION}"
-            ));
+            return Err(DecodeError::BadVersion(version));
         }
         let mut slots = Vec::new();
         for i in 0..self.count {
@@ -234,7 +248,10 @@ mod tests {
     fn decodes_slots_in_use() {
         let layout = layout();
         let mut bytes = vec![0u8; layout.region().1];
-        assert_eq!(layout.decode(&bytes).unwrap_err(), "not started yet");
+        assert_eq!(
+            layout.decode(&bytes).unwrap_err().to_string(),
+            "not started yet"
+        );
 
         put(&mut bytes, layout.magic, STATS_MAGIC);
         put(&mut bytes, layout.version, STATS_VERSION);
@@ -263,7 +280,16 @@ mod tests {
         assert!(reading.task(0x2000_0200).is_none());
 
         put(&mut bytes, layout.version, 2);
-        assert!(layout.decode(&bytes).unwrap_err().contains("version 2"));
-        assert_eq!(layout.decode(&bytes[..4]).unwrap_err(), "short read");
+        assert!(
+            layout
+                .decode(&bytes)
+                .unwrap_err()
+                .to_string()
+                .contains("version 2")
+        );
+        assert_eq!(
+            layout.decode(&bytes[..4]).unwrap_err().to_string(),
+            "short read"
+        );
     }
 }

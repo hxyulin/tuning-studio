@@ -230,6 +230,29 @@ pub enum TreeError {
     BadStep { at: String, reason: String },
 }
 
+/// Why [`preview`] could not produce a text.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum PreviewError {
+    #[error("{0}")]
+    Tree(#[from] TreeError),
+    /// The caller's memory reader failed; this is its message.
+    #[error("{0}")]
+    Read(String),
+    #[error("unsupported word size")]
+    WordSize,
+    #[error("not readable")]
+    NotReadable,
+    #[error("address overflow")]
+    AddressOverflow,
+    #[error("null string pointer")]
+    NullStringPointer,
+    #[error("unknown enum discriminant")]
+    UnknownDiscriminant,
+    #[error("invalid character")]
+    InvalidCharacter,
+}
+
 pub fn summary(elf: &ElfInfo) -> ElfSummary {
     ElfSummary {
         path: elf.path.clone(),
@@ -987,10 +1010,11 @@ pub fn preview(
     elf: &ElfInfo,
     node: &NodeRef,
     read: &mut dyn FnMut(u64, usize) -> Result<Vec<u8>, String>,
-) -> Result<Option<Preview>, String> {
-    let word = |bytes: Vec<u8>| -> Result<u64, String> {
+) -> Result<Option<Preview>, PreviewError> {
+    let mut read = |address: u64, len: usize| read(address, len).map_err(PreviewError::Read);
+    let word = |bytes: Vec<u8>| -> Result<u64, PreviewError> {
         if bytes.is_empty() || bytes.len() > 8 {
-            return Err("unsupported word size".into());
+            return Err(PreviewError::WordSize);
         }
         let mut raw = [0u8; 8];
         if elf.is_little_endian {
@@ -1001,10 +1025,14 @@ pub fn preview(
             Ok(u64::from_be_bytes(raw))
         }
     };
-    let (sym, at) = resolve_with_memory(elf, node, &mut |a, n| word(read(a, n)?), true)
-        .map_err(|e| e.to_string())?;
+    let (sym, at) = resolve_with_memory(
+        elf,
+        node,
+        &mut |a, n| read(a, n).and_then(word).map_err(|e| e.to_string()),
+        true,
+    )?;
     if sym.is_some_and(|s| !s.is_readable()) {
-        return Err("not readable".into());
+        return Err(PreviewError::NotReadable);
     }
     let table = elf.type_table();
     let mut active_variant = None;
@@ -1013,18 +1041,18 @@ pub fn preview(
         let count = word(read(
             at.address
                 .checked_add(length.offset)
-                .ok_or("address overflow")?,
+                .ok_or(PreviewError::AddressOverflow)?,
             width,
         )?)?;
         if is_str {
             let pointer = word(read(
                 at.address
                     .checked_add(data.offset)
-                    .ok_or("address overflow")?,
+                    .ok_or(PreviewError::AddressOverflow)?,
                 width,
             )?)?;
             if count > 0 && pointer == 0 {
-                return Err("null string pointer".into());
+                return Err(PreviewError::NullStringPointer);
             }
             let bytes = if count == 0 {
                 vec![]
@@ -1057,21 +1085,23 @@ pub fn preview(
                 let part = s.variant_part.as_ref().unwrap();
                 let tag = if let Some(d) = &part.discriminant {
                     word(read(
-                        at.address.checked_add(d.offset).ok_or("address overflow")?,
+                        at.address
+                            .checked_add(d.offset)
+                            .ok_or(PreviewError::AddressOverflow)?,
                         table.type_size(d.type_id).unwrap_or(0) as usize,
                     )?)?
                 } else {
                     0
                 };
-                let variant = part.select(tag).ok_or("unknown enum discriminant")?;
+                let variant = part.select(tag).ok_or(PreviewError::UnknownDiscriminant)?;
                 active_variant = Some(variant.member.name.clone());
                 variant_label(table, variant)
             }
             Some(TypeDef::Primitive(crate::types::PrimitiveDef::UnicodeChar { size })) => {
                 let value = word(read(at.address, *size as usize)?)?;
-                char::from_u32(u32::try_from(value).map_err(|_| "invalid character")?)
+                char::from_u32(u32::try_from(value).map_err(|_| PreviewError::InvalidCharacter)?)
                     .map(|c| format!("{c:?} (U+{value:04X})"))
-                    .ok_or("invalid character")?
+                    .ok_or(PreviewError::InvalidCharacter)?
             }
             _ => return Ok(None),
         }
