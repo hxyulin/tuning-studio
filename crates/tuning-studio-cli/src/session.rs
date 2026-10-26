@@ -24,6 +24,10 @@ use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 use studio_dwarf::{ElfInfo, ElfParser};
 
+use crate::action::{
+    Action, BreakArgs, DeleteArgs, FlashArgs, ReadArgs, ResetArgs, SetArgs, TasksArgs, TraceArgs,
+    WatchArgs,
+};
 use crate::daemon::{self, Request, Response};
 use crate::debug::{self, Breakpoints};
 use crate::flash;
@@ -62,84 +66,10 @@ struct Line {
 
 #[derive(Subcommand)]
 enum SessionCommand {
-    /// Read variables or addresses once
-    Read {
-        #[arg(required = true)]
-        locations: Vec<String>,
-    },
-    /// Read variables or addresses repeatedly, until `unwatch`
-    Watch {
-        #[arg(required = true)]
-        locations: Vec<String>,
-        /// Time between reads in milliseconds
-        #[arg(long, default_value_t = 100)]
-        interval: u64,
-        /// Stop after this many reads
-        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
-        count: Option<u64>,
-    },
+    #[command(flatten)]
+    Action(Action),
     /// Stop the watches with these numbers, or all of them
     Unwatch { ids: Vec<u32> },
-    /// Sample every Embassy task, then print how often each was run-queued and
-    /// where it was parked. The session pauses its other work while sampling.
-    Tasks {
-        /// How long to sample, in milliseconds
-        #[arg(long, default_value_t = 1000)]
-        duration: u64,
-    },
-    /// Record every write to up to four values with the DWT's data trace. The
-    /// session pauses its other work while tracing.
-    Trace {
-        #[arg(required = true)]
-        locations: Vec<String>,
-        /// How long to trace, in milliseconds
-        #[arg(long, default_value_t = 1000)]
-        duration: u64,
-    },
-    /// Print every `Param` and `watch!` value
-    Values,
-    /// Write one value, then read it back. A `Param` changes through the
-    /// firmware, which applies its range and step.
-    Set {
-        location: String,
-        #[arg(allow_negative_numbers = true)]
-        value: String,
-    },
-    /// Halt the core
-    Halt,
-    /// Resume the core
-    Resume,
-    /// Execute one instruction on a halted core
-    Step,
-    /// Set a hardware breakpoint on a function or an address
-    Break {
-        /// Function name, such as `SysTick` or `control::tick`, or an address
-        target: String,
-    },
-    /// Clear the breakpoints with these numbers, or all of them
-    Delete { ids: Vec<u32> },
-    /// Reset the core and let it run
-    Reset {
-        /// Halt at the reset vector instead
-        #[arg(long)]
-        halt: bool,
-    },
-    /// Program an ELF, by default the session's, which may have been rebuilt; then
-    /// reset. The session uses the new ELF's symbols and logs from then on.
-    Flash {
-        elf: Option<PathBuf>,
-        /// Read the flash back afterwards
-        #[arg(long)]
-        verify: bool,
-        /// Erase the whole chip rather than only the sectors the ELF uses
-        #[arg(long)]
-        chip_erase: bool,
-        /// Halt at the reset vector instead of running
-        #[arg(long)]
-        halt: bool,
-    },
-    /// Print the core status, breakpoints and watches
-    Status,
     /// Detach and exit
     Quit,
 }
@@ -456,7 +386,7 @@ fn handle(
     };
     let mut session = target.session.lock();
     match command {
-        SessionCommand::Reset { halt } => {
+        SessionCommand::Action(Action::Reset(ResetArgs { halt })) => {
             if let Some(logs) = &mut state.logs {
                 logs.restart(&mut session)?;
             }
@@ -465,12 +395,15 @@ fn handle(
             writeln!(out, "{}", if halt { "reset and halted" } else { "reset" })?;
             return Ok(Outcome::Done);
         }
-        SessionCommand::Flash {
+        SessionCommand::Action(Action::Flash {
             elf,
-            verify,
-            chip_erase,
-            halt,
-        } => {
+            options:
+                FlashArgs {
+                    verify,
+                    chip_erase,
+                    halt,
+                },
+        }) => {
             let path = elf
                 .or_else(|| state.elf_path.clone())
                 .ok_or_else(|| anyhow!("flash needs an ELF"))?;
@@ -490,25 +423,18 @@ fn handle(
     }
     let elf = state.elf.as_ref();
     match command {
-        SessionCommand::Reset { .. } | SessionCommand::Flash { .. } => unreachable!(),
-        SessionCommand::Read { locations } => {
+        SessionCommand::Action(Action::Reset(_) | Action::Flash { .. }) => unreachable!(),
+        SessionCommand::Action(Action::Read(ReadArgs { locations })) => {
             let mut memory = target.memory(&mut session)?;
-            let locations = locations
-                .iter()
-                .map(|location| path::locate(elf, &mut memory, location))
-                .collect::<Result<Vec<_>>>()?;
-            *out += &crate::read_each(elf, &mut memory, &locations)?;
+            *out += &crate::read_locations(elf, &mut memory, &locations)?;
         }
-        SessionCommand::Watch {
+        SessionCommand::Action(Action::Watch(WatchArgs {
             locations,
             interval,
             count,
-        } => {
+        })) => {
             let mut memory = target.memory(&mut session)?;
-            let resolved = locations
-                .iter()
-                .map(|location| path::locate(elf, &mut memory, location))
-                .collect::<Result<Vec<_>>>()?;
+            let resolved = crate::locate_all(elf, &mut memory, &locations)?;
             state.next_watch += 1;
             let watch = Watch {
                 id: state.next_watch,
@@ -543,13 +469,11 @@ fn handle(
                 }
             }
         }
-        SessionCommand::Set { location, value } => {
+        SessionCommand::Action(Action::Set(SetArgs { location, value })) => {
             let mut memory = target.memory(&mut session)?;
-            let location = path::locate(elf, &mut memory, &location)?;
-            *out += &crate::set(elf, &mut memory, &location, &value)?;
-            *out += &crate::read(elf, &mut memory, &location)?;
+            *out += &crate::set_and_read(elf, &mut memory, &location, &value)?;
         }
-        SessionCommand::Tasks { duration } => {
+        SessionCommand::Action(Action::Tasks(TasksArgs { duration })) => {
             let elf = elf.ok_or_else(|| anyhow!("the session has no ELF"))?;
             *out += &crate::tasks::profile(
                 elf,
@@ -557,10 +481,10 @@ fn handle(
                 Duration::from_millis(duration),
             )?;
         }
-        SessionCommand::Trace {
+        SessionCommand::Action(Action::Trace(TraceArgs {
             locations,
             duration,
-        } => {
+        })) => {
             *out += &crate::trace::run(
                 target,
                 &mut session,
@@ -571,16 +495,16 @@ fn handle(
                 &std::sync::atomic::AtomicBool::new(false),
             )?;
         }
-        SessionCommand::Values => {
+        SessionCommand::Action(Action::Values) => {
             let elf = elf.ok_or_else(|| anyhow!("the session has no ELF"))?;
             *out += &crate::api::values(elf, &mut target.memory(&mut session)?)?;
         }
-        SessionCommand::Halt => {
+        SessionCommand::Action(Action::Halt) => {
             debug::halt(&mut session)?;
             let status = debug::status(&mut session)?;
             writeln!(out, "{}", describe(state, &mut session, status)?)?;
         }
-        SessionCommand::Resume => {
+        SessionCommand::Action(Action::Resume) => {
             debug::resume(&mut session)?;
             // The core may halt at a breakpoint again before the next poll, which would
             // otherwise look like no change.
@@ -590,23 +514,23 @@ fn handle(
                 println!("running");
             }
         }
-        SessionCommand::Step => {
+        SessionCommand::Action(Action::Step) => {
             debug::step(&mut session)?;
             // A step leaves the core halted, so the status does not change; print it here.
             let status = debug::status(&mut session)?;
             state.status = Some(status);
             writeln!(out, "{}", describe(state, &mut session, status)?)?;
         }
-        SessionCommand::Break { target: text } => {
+        SessionCommand::Action(Action::Break(BreakArgs { target: text })) => {
             let breakpoint = state.breakpoints.add(elf, &mut session, &text)?;
             writeln!(out, "breakpoint {} at {}", breakpoint.id, breakpoint.label)?;
         }
-        SessionCommand::Delete { ids } => {
+        SessionCommand::Action(Action::Delete(DeleteArgs { ids })) => {
             for breakpoint in state.breakpoints.delete(&mut session, &ids)? {
                 writeln!(out, "breakpoint {} cleared", breakpoint.id)?;
             }
         }
-        SessionCommand::Status => {
+        SessionCommand::Action(Action::Status) => {
             let status = debug::status(&mut session)?;
             writeln!(out, "{}", describe(state, &mut session, status)?)?;
             for breakpoint in state.breakpoints.iter() {
@@ -812,12 +736,22 @@ mod tests {
         let line = Line::try_parse_from(["watch", "0x2000_0000", "--count", "2"]).unwrap();
         assert!(matches!(
             line.command,
-            SessionCommand::Watch { count: Some(2), .. }
+            SessionCommand::Action(Action::Watch(WatchArgs { count: Some(2), .. }))
         ));
     }
 
-    fn parse(words: &[&str]) -> SessionCommand {
-        Line::try_parse_from(words).unwrap().command
+    fn parse<S: AsRef<std::ffi::OsStr>>(words: &[S]) -> Action {
+        match Line::try_parse_from(words.iter().map(AsRef::as_ref))
+            .unwrap()
+            .command
+        {
+            SessionCommand::Action(action) => action,
+            _ => panic!("not a shared command"),
+        }
+    }
+
+    fn strings(words: &[&str]) -> Vec<String> {
+        words.iter().map(|word| word.to_string()).collect()
     }
 
     // The words below are what the one-shot commands in main.rs send to a running
@@ -825,102 +759,147 @@ mod tests {
 
     #[test]
     fn parses_forwarded_read_and_set() {
-        let SessionCommand::Read { locations } = parse(&["read", "a.b", "0x2000_0000:f32"]) else {
-            panic!("not read");
-        };
-        assert_eq!(locations, ["a.b", "0x2000_0000:f32"]);
-        let SessionCommand::Set { location, value } = parse(&["set", "a.b", "-1.5"]) else {
-            panic!("not set");
-        };
-        assert_eq!((location.as_str(), value.as_str()), ("a.b", "-1.5"));
+        assert_eq!(
+            parse(&["read", "a.b", "0x2000_0000:f32"]),
+            Action::Read(ReadArgs {
+                locations: strings(&["a.b", "0x2000_0000:f32"])
+            })
+        );
+        assert_eq!(
+            parse(&["set", "a.b", "-1.5"]),
+            Action::Set(SetArgs {
+                location: "a.b".into(),
+                value: "-1.5".into()
+            })
+        );
     }
 
     #[test]
     fn parses_forwarded_watch_tasks_and_trace() {
-        let SessionCommand::Watch {
-            locations,
-            interval,
-            count,
-        } = parse(&["watch", "a", "b", "--interval", "250", "--count", "3"])
-        else {
-            panic!("not watch");
-        };
         assert_eq!(
-            (locations, interval, count),
-            (vec!["a".into(), "b".into()], 250, Some(3))
+            parse(&["watch", "a", "b", "--interval", "250", "--count", "3"]),
+            Action::Watch(WatchArgs {
+                locations: strings(&["a", "b"]),
+                interval: 250,
+                count: Some(3)
+            })
         );
-        let SessionCommand::Watch {
-            interval, count, ..
-        } = parse(&["watch", "a", "--interval", "100"])
-        else {
-            panic!("not watch");
-        };
-        assert_eq!((interval, count), (100, None));
-        let SessionCommand::Tasks { duration } = parse(&["tasks", "--duration", "1000"]) else {
-            panic!("not tasks");
-        };
-        assert_eq!(duration, 1000);
-        let SessionCommand::Trace {
-            locations,
-            duration,
-        } = parse(&["trace", "a", "--duration", "500"])
-        else {
-            panic!("not trace");
-        };
-        assert_eq!((locations, duration), (vec!["a".into()], 500));
+        assert_eq!(
+            parse(&["watch", "a"]),
+            Action::Watch(WatchArgs {
+                locations: strings(&["a"]),
+                interval: 100,
+                count: None
+            })
+        );
+        assert_eq!(
+            parse(&["tasks"]),
+            Action::Tasks(TasksArgs { duration: 1000 })
+        );
+        assert_eq!(
+            parse(&["trace", "a", "--duration", "500"]),
+            Action::Trace(TraceArgs {
+                locations: strings(&["a"]),
+                duration: 500
+            })
+        );
     }
 
     #[test]
     fn parses_forwarded_flash_and_reset() {
-        let SessionCommand::Flash {
-            elf,
-            verify,
-            chip_erase,
-            halt,
-        } = parse(&["flash", "/tmp/fw.elf", "--verify", "--chip-erase", "--halt"])
-        else {
-            panic!("not flash");
-        };
-        assert_eq!(elf, Some(PathBuf::from("/tmp/fw.elf")));
-        assert!(verify && chip_erase && halt);
-        let SessionCommand::Flash {
-            verify,
-            chip_erase,
-            halt,
-            ..
-        } = parse(&["flash", "/tmp/fw.elf"])
-        else {
-            panic!("not flash");
-        };
-        assert!(!verify && !chip_erase && !halt);
-        assert!(matches!(
+        assert_eq!(
+            parse(&["flash", "/tmp/fw.elf", "--verify", "--chip-erase", "--halt"]),
+            Action::Flash {
+                elf: Some(PathBuf::from("/tmp/fw.elf")),
+                options: FlashArgs {
+                    verify: true,
+                    chip_erase: true,
+                    halt: true
+                }
+            }
+        );
+        assert_eq!(
             parse(&["reset", "--halt"]),
-            SessionCommand::Reset { halt: true }
-        ));
-        assert!(matches!(
-            parse(&["reset"]),
-            SessionCommand::Reset { halt: false }
-        ));
+            Action::Reset(ResetArgs { halt: true })
+        );
+        assert_eq!(parse(&["reset"]), Action::Reset(ResetArgs { halt: false }));
     }
 
     #[test]
     fn parses_forwarded_plain_commands() {
-        assert!(matches!(parse(&["values"]), SessionCommand::Values));
-        assert!(matches!(parse(&["halt"]), SessionCommand::Halt));
-        assert!(matches!(parse(&["resume"]), SessionCommand::Resume));
-        assert!(matches!(parse(&["step"]), SessionCommand::Step));
-        assert!(matches!(parse(&["status"]), SessionCommand::Status));
-        let SessionCommand::Break { target } = parse(&["break", "control::tick"]) else {
-            panic!("not break");
+        assert_eq!(parse(&["values"]), Action::Values);
+        assert_eq!(parse(&["halt"]), Action::Halt);
+        assert_eq!(parse(&["resume"]), Action::Resume);
+        assert_eq!(parse(&["step"]), Action::Step);
+        assert_eq!(parse(&["status"]), Action::Status);
+        assert_eq!(
+            parse(&["break", "control::tick"]),
+            Action::Break(BreakArgs {
+                target: "control::tick".into()
+            })
+        );
+        assert_eq!(
+            parse(&["delete", "1", "3"]),
+            Action::Delete(DeleteArgs { ids: vec![1, 3] })
+        );
+        assert_eq!(
+            parse(&["delete"]),
+            Action::Delete(DeleteArgs { ids: vec![] })
+        );
+    }
+
+    #[test]
+    fn every_action_round_trips_through_its_words() {
+        let flash = |elf: Option<&str>, verify, chip_erase, halt| Action::Flash {
+            elf: elf.map(PathBuf::from),
+            options: FlashArgs {
+                verify,
+                chip_erase,
+                halt,
+            },
         };
-        assert_eq!(target, "control::tick");
-        let SessionCommand::Delete { ids } = parse(&["delete", "1", "3"]) else {
-            panic!("not delete");
-        };
-        assert_eq!(ids, [1, 3]);
-        let SessionCommand::Delete { ids } = parse(&["delete"]) else {
-            panic!("not delete");
-        };
-        assert!(ids.is_empty());
+        let actions = [
+            Action::Read(ReadArgs {
+                locations: strings(&["a.b[3]", "0x2400_0070:f32"]),
+            }),
+            Action::Watch(WatchArgs {
+                locations: strings(&["a", "b"]),
+                interval: 0,
+                count: Some(7),
+            }),
+            Action::Watch(WatchArgs {
+                locations: strings(&["a"]),
+                interval: 100,
+                count: None,
+            }),
+            Action::Tasks(TasksArgs { duration: 250 }),
+            Action::Trace(TraceArgs {
+                locations: strings(&["a", "b"]),
+                duration: 2000,
+            }),
+            Action::Values,
+            Action::Set(SetArgs {
+                location: "a.b".into(),
+                value: "-1.5".into(),
+            }),
+            Action::Halt,
+            Action::Resume,
+            Action::Step,
+            Action::Break(BreakArgs {
+                target: "control::tick".into(),
+            }),
+            Action::Delete(DeleteArgs { ids: vec![1, 3] }),
+            Action::Delete(DeleteArgs { ids: vec![] }),
+            Action::Reset(ResetArgs { halt: false }),
+            Action::Reset(ResetArgs { halt: true }),
+            flash(Some("/tmp/fw.elf"), true, true, true),
+            flash(Some("/tmp/fw.elf"), false, false, false),
+            flash(None, true, false, false),
+            Action::Status,
+        ];
+        for action in actions {
+            let words = action.to_words();
+            assert_eq!(parse(&words), action, "words {words:?}");
+        }
     }
 }

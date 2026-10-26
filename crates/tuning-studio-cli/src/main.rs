@@ -1,3 +1,4 @@
+mod action;
 mod api;
 mod daemon;
 mod debug;
@@ -23,6 +24,10 @@ use std::time::{Duration, Instant};
 use studio_dwarf::tree::{self, NodeKind};
 use studio_dwarf::{ElfInfo, ElfParser, Step};
 
+use action::{
+    Action, BreakArgs, DeleteArgs, FlashArgs, ReadArgs, ResetArgs, SetArgs, TasksArgs, TraceArgs,
+    WatchArgs,
+};
 use memory::Memory;
 use path::Location;
 
@@ -68,48 +73,31 @@ enum Command {
     Read {
         #[command(flatten)]
         target: TargetArgs,
-        /// Symbol paths, such as `CONTROL.yaw.target_rpm` or `buffer[3]`, or addresses
-        /// with an optional type and path, such as `0x24000070`, `0x24000070:f32` or
-        /// `0x20000038:Axis.gains.2`. Types other than the primitives need an ELF.
-        #[arg(required = true)]
-        locations: Vec<String>,
+        #[command(flatten)]
+        args: ReadArgs,
     },
     /// Read variables or addresses repeatedly until Ctrl-C
     Watch {
         #[command(flatten)]
         target: TargetArgs,
-        /// Symbol paths or addresses, as for `read`
-        #[arg(required = true)]
-        locations: Vec<String>,
-        /// Time between reads in milliseconds; 0 reads as fast as the probe can.
-        /// A session reads at most every 1 ms.
-        #[arg(long, default_value_t = 100)]
-        interval: u64,
-        /// Stop after this many reads
-        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
-        count: Option<u64>,
+        #[command(flatten)]
+        args: WatchArgs,
     },
     /// Sample every Embassy task while the firmware runs, then print how often
     /// each was run-queued and which `.await` it was parked on
     Tasks {
         #[command(flatten)]
         target: TargetArgs,
-        /// How long to sample, in milliseconds
-        #[arg(long, default_value_t = 1000)]
-        duration: u64,
+        #[command(flatten)]
+        args: TasksArgs,
     },
     /// Record every write to up to four values with the DWT's data trace,
     /// without halting the core, then print each with its time
     Trace {
         #[command(flatten)]
         target: TargetArgs,
-        /// Symbol paths or addresses of values of at most 4 bytes, or `watch!`
-        /// values and `Param`s holding one
-        #[arg(required = true)]
-        locations: Vec<String>,
-        /// How long to trace, in milliseconds
-        #[arg(long, default_value_t = 1000)]
-        duration: u64,
+        #[command(flatten)]
+        args: TraceArgs,
     },
     /// Print every `Param` and `watch!` value the firmware declares with
     /// tuning-studio-api
@@ -122,10 +110,8 @@ enum Command {
     Set {
         #[command(flatten)]
         target: TargetArgs,
-        /// Symbol path or address, as for `read`
-        location: String,
-        #[arg(allow_negative_numbers = true)]
-        value: String,
+        #[command(flatten)]
+        args: SetArgs,
     },
     /// Halt the core
     Halt {
@@ -148,15 +134,16 @@ enum Command {
         /// Probe of the session, needed when several are running
         #[arg(long)]
         probe: Option<String>,
-        /// Function name, such as `SysTick` or `control::tick`, or an address
-        target: String,
+        #[command(flatten)]
+        args: BreakArgs,
     },
     /// Clear the breakpoints with these numbers, or all of them
     Delete {
         /// Probe of the session, needed when several are running
         #[arg(long)]
         probe: Option<String>,
-        ids: Vec<u32>,
+        #[command(flatten)]
+        args: DeleteArgs,
     },
     /// Print the core status, and a session's breakpoints and watches
     Status {
@@ -169,23 +156,15 @@ enum Command {
         probe: ProbeArgs,
         /// Firmware ELF
         elf: PathBuf,
-        /// Read the flash back after programming
-        #[arg(long)]
-        verify: bool,
-        /// Erase the whole chip rather than only the sectors the ELF uses
-        #[arg(long)]
-        chip_erase: bool,
-        /// Halt at the reset vector instead of running
-        #[arg(long)]
-        halt: bool,
+        #[command(flatten)]
+        options: FlashArgs,
     },
     /// Reset the target
     Reset {
         #[command(flatten)]
         probe: ProbeArgs,
-        /// Halt at the reset vector instead of running
-        #[arg(long)]
-        halt: bool,
+        #[command(flatten)]
+        args: ResetArgs,
     },
     /// Erase all flash
     Erase {
@@ -269,11 +248,6 @@ fn parse_elf(path: &Path) -> Result<ElfInfo> {
     ElfParser::parse(path).with_context(|| format!("could not parse {}", path.display()))
 }
 
-/// The session grammar's words for a command
-fn words(command: &str, rest: impl IntoIterator<Item = String>) -> Vec<String> {
-    std::iter::once(command.to_string()).chain(rest).collect()
-}
-
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Run {
@@ -301,49 +275,32 @@ fn main() -> Result<()> {
             let target = probe.attach(false)?;
             serve_session(&target, info, elf, serve)?;
         }
-        Command::Read { target, locations } => {
+        Command::Read { target, args } => {
             if let Some(session) = target.probe.session()? {
-                return daemon::request(session, words("read", locations));
+                return daemon::request(session, Action::Read(args).to_words());
             }
             let (probe, elf) = target.attach()?;
             let mut session = probe.session.lock();
             let mut memory = probe.memory(&mut session)?;
-            let locations = locations
-                .iter()
-                .map(|location| path::locate(elf.as_ref(), &mut memory, location))
-                .collect::<Result<Vec<_>>>()?;
-            print!("{}", read_each(elf.as_ref(), &mut memory, &locations)?);
+            print!(
+                "{}",
+                read_locations(elf.as_ref(), &mut memory, &args.locations)?
+            );
         }
-        Command::Watch {
-            target,
-            locations,
-            interval,
-            count,
-        } => {
+        Command::Watch { target, args } => {
             if let Some(session) = target.probe.session()? {
-                let mut args = words("watch", locations);
-                args.extend(["--interval".into(), interval.to_string()]);
-                if let Some(count) = count {
-                    args.extend(["--count".into(), count.to_string()]);
-                }
-                return daemon::request(session, args);
+                return daemon::request(session, Action::Watch(args).to_words());
             }
             let (probe, elf) = target.attach()?;
             let mut session = probe.session.lock();
             let mut memory = probe.memory(&mut session)?;
-            let locations = locations
-                .iter()
-                .map(|location| path::locate(elf.as_ref(), &mut memory, location))
-                .collect::<Result<Vec<_>>>()?;
-            let interval = Duration::from_millis(interval);
-            watch(elf.as_ref(), &mut memory, &locations, interval, count)?;
+            let locations = locate_all(elf.as_ref(), &mut memory, &args.locations)?;
+            let interval = Duration::from_millis(args.interval);
+            watch(elf.as_ref(), &mut memory, &locations, interval, args.count)?;
         }
-        Command::Tasks { target, duration } => {
+        Command::Tasks { target, args } => {
             if let Some(session) = target.probe.session()? {
-                return daemon::request(
-                    session,
-                    words("tasks", ["--duration".into(), duration.to_string()]),
-                );
+                return daemon::request(session, Action::Tasks(args).to_words());
             }
             let (probe, elf) = target.attach()?;
             let elf = elf.ok_or_else(|| anyhow!("pass --elf to find the tasks"))?;
@@ -351,18 +308,12 @@ fn main() -> Result<()> {
             let mut memory = probe.memory(&mut session)?;
             print!(
                 "{}",
-                tasks::profile(&elf, &mut memory, Duration::from_millis(duration))?
+                tasks::profile(&elf, &mut memory, Duration::from_millis(args.duration))?
             );
         }
-        Command::Trace {
-            target,
-            locations,
-            duration,
-        } => {
+        Command::Trace { target, args } => {
             if let Some(session) = target.probe.session()? {
-                let mut args = words("trace", locations);
-                args.extend(["--duration".into(), duration.to_string()]);
-                return daemon::request(session, args);
+                return daemon::request(session, Action::Trace(args).to_words());
             }
             // Ctrl-C ends collection early; the ETF is still stopped and reported.
             let stop = Arc::new(AtomicBool::new(false));
@@ -377,83 +328,70 @@ fn main() -> Result<()> {
                     &probe,
                     &mut session,
                     elf.as_ref(),
-                    &locations,
-                    Duration::from_millis(duration),
+                    &args.locations,
+                    Duration::from_millis(args.duration),
                     &stop
                 )?
             );
         }
         Command::Values { target } => {
             if let Some(session) = target.probe.session()? {
-                return daemon::request(session, words("values", []));
+                return daemon::request(session, Action::Values.to_words());
             }
             let (probe, elf) = target.attach()?;
             let elf = elf.ok_or_else(|| anyhow!("pass --elf to find the values"))?;
             let mut session = probe.session.lock();
             print!("{}", api::values(&elf, &mut probe.memory(&mut session)?)?);
         }
-        Command::Set {
-            target,
-            location,
-            value,
-        } => {
+        Command::Set { target, args } => {
             if let Some(session) = target.probe.session()? {
-                return daemon::request(session, words("set", [location, value]));
+                return daemon::request(session, Action::Set(args).to_words());
             }
             let (probe, elf) = target.attach()?;
             let mut session = probe.session.lock();
             let mut memory = probe.memory(&mut session)?;
-            let location = path::locate(elf.as_ref(), &mut memory, &location)?;
-            print!("{}", set(elf.as_ref(), &mut memory, &location, &value)?);
-            print!("{}", read(elf.as_ref(), &mut memory, &location)?);
+            print!(
+                "{}",
+                set_and_read(elf.as_ref(), &mut memory, &args.location, &args.value)?
+            );
         }
-        Command::Halt { target } => run_control(&target, "halt", debug::halt)?,
-        Command::Resume { target } => run_control(&target, "resume", debug::resume)?,
-        Command::Step { target } => run_control(&target, "step", debug::step)?,
-        Command::Status { target } => run_control(&target, "status", |_| Ok(()))?,
-        Command::Break { probe, target } => {
+        Command::Halt { target } => run_control(&target, Action::Halt, debug::halt)?,
+        Command::Resume { target } => run_control(&target, Action::Resume, debug::resume)?,
+        Command::Step { target } => run_control(&target, Action::Step, debug::step)?,
+        Command::Status { target } => run_control(&target, Action::Status, |_| Ok(()))?,
+        Command::Break { probe, args } => {
             let session = daemon::find(probe.as_deref())?.ok_or_else(no_session_for_breakpoints)?;
-            daemon::request(session, words("break", [target]))?;
+            daemon::request(session, Action::Break(args).to_words())?;
         }
-        Command::Delete { probe, ids } => {
+        Command::Delete { probe, args } => {
             let session = daemon::find(probe.as_deref())?.ok_or_else(no_session_for_breakpoints)?;
-            daemon::request(session, words("delete", ids.iter().map(u32::to_string)))?;
+            daemon::request(session, Action::Delete(args).to_words())?;
         }
         Command::Flash {
             probe,
             elf,
-            verify,
-            chip_erase,
-            halt,
+            options,
         } => {
             if let Some(session) = probe.session()? {
-                let mut args = words("flash", [daemon::absolute(&elf)?]);
-                for (set, flag) in [
-                    (verify, "--verify"),
-                    (chip_erase, "--chip-erase"),
-                    (halt, "--halt"),
-                ] {
-                    if set {
-                        args.push(flag.into());
-                    }
-                }
-                return daemon::request(session, args);
+                // The session may run in another directory.
+                let elf = PathBuf::from(daemon::absolute(&elf)?);
+                let action = Action::Flash {
+                    elf: Some(elf),
+                    options,
+                };
+                return daemon::request(session, action.to_words());
             }
             let target = probe.attach(false)?;
             let mut session = target.session.lock();
-            flash::flash(&mut session, &elf, verify, chip_erase)?;
-            flash::reset(&mut session, halt)?;
+            flash::flash(&mut session, &elf, options.verify, options.chip_erase)?;
+            flash::reset(&mut session, options.halt)?;
         }
-        Command::Reset { probe, halt } => {
+        Command::Reset { probe, args } => {
             if let Some(session) = probe.session()? {
-                let mut args = words("reset", []);
-                if halt {
-                    args.push("--halt".into());
-                }
-                return daemon::request(session, args);
+                return daemon::request(session, Action::Reset(args).to_words());
             }
             let target = probe.attach(false)?;
-            flash::reset(&mut target.session.lock(), halt)?;
+            flash::reset(&mut target.session.lock(), args.halt)?;
         }
         Command::Erase { probe } => {
             probe.no_session("erase")?;
@@ -489,11 +427,11 @@ fn no_session_for_breakpoints() -> anyhow::Error {
 /// one, the core keeps the state `action` leaves when the probe detaches.
 fn run_control(
     target: &TargetArgs,
-    command: &str,
+    command: Action,
     action: fn(&mut probe_rs::Session) -> Result<()>,
 ) -> Result<()> {
     if let Some(session) = target.probe.session()? {
-        return daemon::request(session, words(command, []));
+        return daemon::request(session, command.to_words());
     }
     let (probe, elf) = target.attach()?;
     let mut session = probe.session.lock();
@@ -618,6 +556,41 @@ pub fn read_each(
 ) -> Result<String> {
     let groups: Vec<&[Location]> = locations.iter().map(std::slice::from_ref).collect();
     read_all(elf, memory, &groups).into_iter().collect()
+}
+
+/// Resolve every location text, stopping at the first that fails.
+fn locate_all(
+    elf: Option<&ElfInfo>,
+    memory: &mut dyn Memory,
+    texts: &[String],
+) -> Result<Vec<Location>> {
+    texts
+        .iter()
+        .map(|text| path::locate(elf, memory, text))
+        .collect()
+}
+
+/// Resolve and read each location once, for `read` with or without a session.
+pub fn read_locations(
+    elf: Option<&ElfInfo>,
+    memory: &mut dyn Memory,
+    texts: &[String],
+) -> Result<String> {
+    let locations = locate_all(elf, memory, texts)?;
+    read_each(elf, memory, &locations)
+}
+
+/// Write one value and read it back, for `set` with or without a session.
+pub fn set_and_read(
+    elf: Option<&ElfInfo>,
+    memory: &mut dyn Memory,
+    text: &str,
+    value: &str,
+) -> Result<String> {
+    let location = path::locate(elf, memory, text)?;
+    let mut out = set(elf, memory, &location, value)?;
+    out += &read(elf, memory, &location)?;
+    Ok(out)
 }
 
 /// The bytes [`read`] reads of `location` at once. A raw address has none, so the
@@ -760,48 +733,41 @@ mod tests {
         Cli::try_parse_from(args).unwrap().command
     }
 
-    // These are the forms main() forwards to a running session, so the flags here
-    // must exist in the session grammar too.
+    // These are the forms main() forwards to a running session.
     #[test]
     fn parses_the_commands_a_session_serves() {
-        let Command::Watch {
-            interval, count, ..
-        } = parse(&["watch", "a", "--elf", "fw.elf", "--count", "4"])
+        let Command::Watch { args, .. } = parse(&["watch", "a", "--elf", "fw.elf", "--count", "4"])
         else {
             panic!("not watch");
         };
-        assert_eq!((interval, count), (100, Some(4)));
-        let Command::Tasks { duration, .. } = parse(&["tasks"]) else {
+        assert_eq!((args.interval, args.count), (100, Some(4)));
+        let Command::Tasks { args, .. } = parse(&["tasks"]) else {
             panic!("not tasks");
         };
-        assert_eq!(duration, 1000);
-        let Command::Trace { duration, .. } = parse(&["trace", "a", "--duration", "5"]) else {
+        assert_eq!(args.duration, 1000);
+        let Command::Trace { args, .. } = parse(&["trace", "a", "--duration", "5"]) else {
             panic!("not trace");
         };
-        assert_eq!(duration, 5);
-        let Command::Set { value, .. } = parse(&["set", "a", "-2"]) else {
+        assert_eq!(args.duration, 5);
+        let Command::Set { args, .. } = parse(&["set", "a", "-2"]) else {
             panic!("not set");
         };
-        assert_eq!(value, "-2");
-        let Command::Flash {
-            verify,
-            chip_erase,
-            halt,
-            ..
-        } = parse(&["flash", "fw.elf", "--verify", "--chip-erase", "--halt"])
+        assert_eq!(args.value, "-2");
+        let Command::Flash { options, .. } =
+            parse(&["flash", "fw.elf", "--verify", "--chip-erase", "--halt"])
         else {
             panic!("not flash");
         };
-        assert!(verify && chip_erase && halt);
-        assert!(matches!(
-            parse(&["reset", "--halt"]),
-            Command::Reset { halt: true, .. }
-        ));
+        assert!(options.verify && options.chip_erase && options.halt);
+        let Command::Reset { args, .. } = parse(&["reset", "--halt"]) else {
+            panic!("not reset");
+        };
+        assert!(args.halt);
         assert!(matches!(parse(&["break", "main"]), Command::Break { .. }));
-        let Command::Delete { ids, .. } = parse(&["delete", "2"]) else {
+        let Command::Delete { args, .. } = parse(&["delete", "2"]) else {
             panic!("not delete");
         };
-        assert_eq!(ids, [2]);
+        assert_eq!(args.ids, [2]);
     }
 
     #[test]
