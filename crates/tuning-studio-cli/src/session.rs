@@ -25,12 +25,11 @@ use std::time::{Duration, Instant};
 use studio_dwarf::{ElfInfo, ElfParser};
 
 use crate::action::{
-    Action, BreakArgs, DeleteArgs, FlashArgs, ReadArgs, ResetArgs, SetArgs, TasksArgs, TraceArgs,
-    WatchArgs,
+    Action, BreakArgs, DeleteArgs, FlashArgs, ReadArgs, SetArgs, TasksArgs, TraceArgs, WatchArgs,
 };
 use crate::daemon::{self, Request, Response};
 use crate::debug::{self, Breakpoints};
-use crate::flash;
+use crate::flash::{self, AfterReset};
 use crate::gdb;
 use crate::logs::Logs;
 use crate::path::{self, Location};
@@ -386,37 +385,25 @@ fn handle(
     };
     let mut session = target.session.lock();
     match command {
-        SessionCommand::Action(Action::Reset(ResetArgs { halt })) => {
+        SessionCommand::Action(Action::Reset(args)) => {
             if let Some(logs) = &mut state.logs {
                 logs.restart(&mut session)?;
             }
-            flash::reset(&mut session, halt)?;
+            let after = args.after_reset();
+            flash::reset(&mut session, after)?;
             state.status = None;
-            writeln!(out, "{}", if halt { "reset and halted" } else { "reset" })?;
+            let text = match after {
+                AfterReset::Run => "reset",
+                AfterReset::Halt => "reset and halted",
+            };
+            writeln!(out, "{text}")?;
             return Ok(Outcome::Done);
         }
-        SessionCommand::Action(Action::Flash {
-            elf,
-            options:
-                FlashArgs {
-                    verify,
-                    chip_erase,
-                    halt,
-                },
-        }) => {
+        SessionCommand::Action(Action::Flash { elf, options }) => {
             let path = elf
                 .or_else(|| state.elf_path.clone())
                 .ok_or_else(|| anyhow!("flash needs an ELF"))?;
-            reflash(
-                target,
-                &mut session,
-                state,
-                &path,
-                verify,
-                chip_erase,
-                halt,
-                out,
-            )?;
+            reflash(target, &mut session, state, &path, &options, out)?;
             return Ok(Outcome::Done);
         }
         _ => {}
@@ -658,15 +645,12 @@ fn run_watches(target: &Target, state: &mut State) {
 
 /// Program `file`, reload its symbols and logs, and reset. Breakpoints are cleared,
 /// since the functions may have moved, and watches are resolved again.
-#[allow(clippy::too_many_arguments)]
 fn reflash(
     target: &Target,
     session: &mut Session,
     state: &mut State,
     file: &Path,
-    verify: bool,
-    chip_erase: bool,
-    halt: bool,
+    options: &FlashArgs,
     out: &mut String,
 ) -> Result<()> {
     let elf =
@@ -676,7 +660,7 @@ fn reflash(
     for breakpoint in state.breakpoints.delete(session, &[])? {
         writeln!(out, "breakpoint {} cleared", breakpoint.id)?;
     }
-    flash::flash(session, file, verify, chip_erase)?;
+    flash::flash(session, file, options)?;
     writeln!(out, "flashed {}", file.display())?;
     state.elf_path = Some(file.to_path_buf());
     state.elf = Some(elf);
@@ -684,7 +668,7 @@ fn reflash(
     if let Some(logs) = &mut state.logs {
         logs.restart(session)?;
     }
-    flash::reset(session, halt)?;
+    flash::reset(session, options.after_reset())?;
     state.status = None;
     let mut memory = target.memory(session)?;
     let elf = state.elf.as_ref();
@@ -729,6 +713,7 @@ pub fn block_sigint() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::action::ResetArgs;
 
     #[test]
     fn watch_count_must_be_positive() {

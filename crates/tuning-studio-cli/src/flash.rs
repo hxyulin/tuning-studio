@@ -10,14 +10,30 @@ use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use crate::action::FlashArgs;
+
+/// What core 0 does after a reset
+#[derive(Clone, Copy)]
+pub enum AfterReset {
+    Run,
+    Halt,
+}
+
+impl AfterReset {
+    /// The `--halt` flag of the commands that reset
+    pub fn from_halt(halt: bool) -> Self {
+        if halt { Self::Halt } else { Self::Run }
+    }
+}
+
 /// Program the ELF's loadable sections into flash.
-pub fn flash(session: &mut Session, elf: &Path, verify: bool, chip_erase: bool) -> Result<()> {
+pub fn flash(session: &mut Session, elf: &Path, options: &FlashArgs) -> Result<()> {
     let mut progress = Progress::default();
-    let mut options = DownloadOptions::default();
-    options.verify = verify;
-    options.do_chip_erase = chip_erase;
-    options.progress = FlashProgress::new(|event| progress.event(event));
-    flashing::download_file_with_options(session, elf, ElfLoader(ElfOptions::default()), options)
+    let mut download = DownloadOptions::default();
+    download.verify = options.verify;
+    download.do_chip_erase = options.chip_erase;
+    download.progress = FlashProgress::new(|event| progress.event(event));
+    flashing::download_file_with_options(session, elf, ElfLoader(ElfOptions::default()), download)
         .with_context(|| format!("could not flash {}", elf.display()))
 }
 
@@ -31,12 +47,13 @@ pub fn erase(session: &mut Session) -> Result<()> {
 }
 
 /// Reset core 0 and let it run, or halt it at the reset vector.
-pub fn reset(session: &mut Session, halt: bool) -> Result<()> {
+pub fn reset(session: &mut Session, after: AfterReset) -> Result<()> {
     let mut core = session.core(0)?;
-    if halt {
-        core.reset_and_halt(Duration::from_millis(500))?;
-    } else {
-        core.reset()?;
+    match after {
+        AfterReset::Run => core.reset()?,
+        AfterReset::Halt => {
+            core.reset_and_halt(Duration::from_millis(500))?;
+        }
     }
     Ok(())
 }

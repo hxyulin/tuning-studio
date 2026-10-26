@@ -30,13 +30,13 @@ pub struct Target {
 
 impl Target {
     /// Attach without resetting. `probe` is `VID:PID` or `VID:PID:SERIAL`; `None`
-    /// takes the only probe connected. `erase_all` permits a full chip erase, which
-    /// some chips need to unlock.
+    /// takes the only probe connected. `permissions` can allow a full chip erase,
+    /// which some chips need to unlock.
     pub fn attach(
         chip: &str,
         probe: Option<&str>,
         speed_khz: u32,
-        erase_all: bool,
+        permissions: Permissions,
     ) -> Result<Self> {
         let probes = Lister::new().list_all();
         let info = match probe {
@@ -62,11 +62,6 @@ impl Target {
         );
         let mut probe = info.open()?;
         probe.set_speed(speed_khz)?;
-        let permissions = if erase_all {
-            Permissions::new().allow_erase_all()
-        } else {
-            Permissions::default()
-        };
         let session = probe
             .attach(chip, permissions)
             .with_context(|| format!("could not attach to {chip}"))?;

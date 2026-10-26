@@ -5,6 +5,8 @@
 use clap::{Args, Subcommand};
 use std::path::PathBuf;
 
+use crate::flash::AfterReset;
+
 #[derive(Subcommand, Debug, PartialEq)]
 pub enum Action {
     /// Read variables or addresses once
@@ -127,6 +129,18 @@ pub struct FlashArgs {
 
 fn push(words: &mut Vec<String>, parts: &[&str]) {
     words.extend(parts.iter().map(|part| part.to_string()));
+}
+
+impl ResetArgs {
+    pub fn after_reset(&self) -> AfterReset {
+        AfterReset::from_halt(self.halt)
+    }
+}
+
+impl FlashArgs {
+    pub fn after_reset(&self) -> AfterReset {
+        AfterReset::from_halt(self.halt)
+    }
 }
 
 impl Action {

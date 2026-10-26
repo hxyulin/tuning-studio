@@ -28,8 +28,10 @@ use action::{
     Action, BreakArgs, DeleteArgs, FlashArgs, ReadArgs, ResetArgs, SetArgs, TasksArgs, TraceArgs,
     WatchArgs,
 };
+use flash::AfterReset;
 use memory::Memory;
 use path::Location;
+use probe_rs::Permissions;
 
 /// Inspect and tune a running target over SWD.
 ///
@@ -209,12 +211,21 @@ struct ProbeArgs {
 }
 
 impl ProbeArgs {
-    fn attach(&self, erase_all: bool) -> Result<target::Target> {
+    fn attach(&self) -> Result<target::Target> {
+        self.attach_with(Permissions::default())
+    }
+
+    /// Attach with permission to erase the whole chip.
+    fn attach_for_erase(&self) -> Result<target::Target> {
+        self.attach_with(Permissions::new().allow_erase_all())
+    }
+
+    fn attach_with(&self, permissions: Permissions) -> Result<target::Target> {
         let chip = self
             .chip
             .as_deref()
             .ok_or_else(|| anyhow!("--chip is needed when no `run` or `attach` is running"))?;
-        target::Target::attach(chip, self.probe.as_deref(), self.speed, erase_all)
+        target::Target::attach(chip, self.probe.as_deref(), self.speed, permissions)
     }
 
     /// The running session for this probe
@@ -240,7 +251,7 @@ impl TargetArgs {
     /// Attach for one command, with the ELF if one was given.
     fn attach(&self) -> Result<(target::Target, Option<ElfInfo>)> {
         let elf = self.elf()?;
-        Ok((self.probe.attach(false)?, elf))
+        Ok((self.probe.attach()?, elf))
     }
 }
 
@@ -258,21 +269,26 @@ fn main() -> Result<()> {
         } => {
             probe.no_session("run")?;
             let info = parse_elf(&elf)?;
-            let target = probe.attach(false)?;
+            let target = probe.attach()?;
             {
                 let mut session = target.session.lock();
-                flash::flash(&mut session, &elf, verify, false)?;
+                let options = FlashArgs {
+                    verify,
+                    chip_erase: false,
+                    halt: false,
+                };
+                flash::flash(&mut session, &elf, &options)?;
                 if let Some(mut logs) = logs::Logs::new(&elf)? {
                     logs.restart(&mut session)?;
                 }
-                flash::reset(&mut session, false)?;
+                flash::reset(&mut session, AfterReset::Run)?;
             }
             serve_session(&target, Some(info), Some(elf), serve)?;
         }
         Command::Attach { probe, elf, serve } => {
             probe.no_session("attach")?;
             let info = elf.as_deref().map(parse_elf).transpose()?;
-            let target = probe.attach(false)?;
+            let target = probe.attach()?;
             serve_session(&target, info, elf, serve)?;
         }
         Command::Read { target, args } => {
@@ -381,21 +397,21 @@ fn main() -> Result<()> {
                 };
                 return daemon::request(session, action.to_words());
             }
-            let target = probe.attach(false)?;
+            let target = probe.attach()?;
             let mut session = target.session.lock();
-            flash::flash(&mut session, &elf, options.verify, options.chip_erase)?;
-            flash::reset(&mut session, options.halt)?;
+            flash::flash(&mut session, &elf, &options)?;
+            flash::reset(&mut session, options.after_reset())?;
         }
         Command::Reset { probe, args } => {
             if let Some(session) = probe.session()? {
                 return daemon::request(session, Action::Reset(args).to_words());
             }
-            let target = probe.attach(false)?;
-            flash::reset(&mut target.session.lock(), args.halt)?;
+            let target = probe.attach()?;
+            flash::reset(&mut target.session.lock(), args.after_reset())?;
         }
         Command::Erase { probe } => {
             probe.no_session("erase")?;
-            flash::erase(&mut probe.attach(true)?.session.lock())?;
+            flash::erase(&mut probe.attach_for_erase()?.session.lock())?;
         }
         Command::List => target::list(),
     }
