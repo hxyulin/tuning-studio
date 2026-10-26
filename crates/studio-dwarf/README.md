@@ -18,7 +18,7 @@ use studio_dwarf::ElfParser;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let elf = ElfParser::parse("firmware.elf")?;
-    for symbol in elf.get_variables().into_iter().filter(|s| s.is_readable()) {
+    for symbol in elf.variables().into_iter().filter(|s| s.is_readable()) {
         println!("{:#x} {}", symbol.address, symbol.demangled_name);
     }
     Ok(())
@@ -31,8 +31,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   diagnostics, with C++ and Rust demangling.
 - `tree`: typed nodes identified by `NodeRef` and `Step`, including structs,
   arrays, tagged enums, pointers, bitfields and bounded borrowed-string previews.
-- `type_table`: shared type definitions for custom inspection tools.
-- `rebuild`: compare tracked symbols after recompiling firmware.
+- `TypeTable`, `TypeHandle` and `TypeDef`: shared type definitions for custom inspection tools.
+- `diff_symbols`: compare tracked symbols after recompiling firmware.
 - `tasks`, `task_stats` and `task_trace`: Embassy task layout discovery and
   decoders for the supported statistics and event-ring formats.
 
