@@ -439,7 +439,7 @@ pub fn children_page(
         n
     };
 
-    let nodes: Vec<SymbolNode> = match table.get(table.underlying(peel(table, at.type_id))) {
+    let nodes: Vec<SymbolNode> = match peeled_def(table, at.type_id) {
         Some(TypeDef::Struct(s)) | Some(TypeDef::Union(s)) => match &s.variant_part {
             Some(part) => part
                 .discriminant
@@ -615,7 +615,7 @@ fn resolve_with_memory<'e>(
         }
         if live
             && let Step::Variant(name) = step
-            && let Some(TypeDef::Struct(s)) = table.get(table.underlying(peel(table, at.type_id)))
+            && let Some(TypeDef::Struct(s)) = peeled_def(table, at.type_id)
             && let Some(part) = &s.variant_part
         {
             let tag = if let Some(d) = &part.discriminant {
@@ -640,7 +640,7 @@ fn resolve_with_memory<'e>(
                 return Err(bad("not readable".into()));
             }
             let Some(TypeDef::Pointer(inner) | TypeDef::Reference(inner)) =
-                table.get(table.underlying(peel(table, at.type_id)))
+                peeled_def(table, at.type_id)
             else {
                 return Err(bad("not a pointer".into()));
             };
@@ -858,6 +858,11 @@ fn peel(table: &TypeTable, type_id: TypeId) -> TypeId {
         .expect("a chain holds at least the type itself")
 }
 
+/// The definition of the value inside every wrapper, after typedefs and qualifiers.
+fn peeled_def(table: &TypeTable, type_id: TypeId) -> Option<&TypeDef> {
+    table.get(table.underlying(peel(table, type_id)))
+}
+
 /// Crates whose statics are runtime plumbing rather than application state.
 const RUNTIME_CRATES: [&str; 6] = [
     "embassy_",
@@ -965,7 +970,7 @@ pub fn split_path(path: &str) -> Vec<String> {
 
 /// Recognize only genuine Rust borrowed str/slice DWARF layouts, not arbitrary structs.
 fn sequence(table: &TypeTable, outer: TypeId) -> Option<(&MemberDef, &MemberDef, TypeId, bool)> {
-    let Some(TypeDef::Struct(s)) = table.get(table.underlying(peel(table, outer))) else {
+    let Some(TypeDef::Struct(s)) = peeled_def(table, outer) else {
         return None;
     };
     let name = s.name.as_deref()?;
@@ -990,7 +995,7 @@ pub fn enum_variants(
 ) -> Result<Option<Vec<(String, i64)>>, TreeError> {
     let (_, at) = resolve_with_memory(elf, node, read_pointer, true)?;
     let table = elf.type_table();
-    Ok(match table.get(table.underlying(peel(table, at.type_id))) {
+    Ok(match peeled_def(table, at.type_id) {
         Some(TypeDef::Enum(e)) => Some(
             e.variants
                 .iter()
@@ -1065,7 +1070,7 @@ pub fn preview(
             format!("[{count} elements]")
         }
     } else {
-        match table.get(table.underlying(peel(table, at.type_id))) {
+        match peeled_def(table, at.type_id) {
             Some(TypeDef::Enum(e)) => {
                 let value = word(read(at.address, e.size as usize)?)?;
                 // Enumerators are signed i64 in DWARF; match both raw bits and sign extension.

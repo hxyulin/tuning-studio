@@ -422,34 +422,23 @@ impl TypeTable {
             return false;
         }
 
-        let resolved_id = self.resolve(id);
-        match self.get(resolved_id) {
-            None => false,
-            Some(def) => match def {
-                TypeDef::Struct(s) | TypeDef::Union(s) => {
-                    !s.members.is_empty()
-                        || s.variant_part
-                            .as_ref()
-                            .is_some_and(|v| !v.variants.is_empty())
-                }
-                // Arrays are expandable if they have a known count > 0
-                TypeDef::Array { count, .. } => count.map(|c| c > 0).unwrap_or(false),
-                // Pointers/references are expandable if they point to an expandable type
-                TypeDef::Pointer(inner) | TypeDef::Reference(inner) => {
-                    self.is_expandable_with_depth(*inner, depth + 1)
-                }
-                TypeDef::Typedef { underlying, .. } => {
-                    self.is_expandable_with_depth(*underlying, depth + 1)
-                }
-                TypeDef::Const(inner) | TypeDef::Volatile(inner) | TypeDef::Restrict(inner) => {
-                    self.is_expandable_with_depth(*inner, depth + 1)
-                }
-                TypeDef::ForwardDecl {
-                    target: Some(target),
-                    ..
-                } => self.is_expandable_with_depth(*target, depth + 1),
-                _ => false,
-            },
+        let Some(stripped) = self.strip(id) else {
+            return false;
+        };
+        match self.get(stripped) {
+            Some(TypeDef::Struct(s) | TypeDef::Union(s)) => {
+                !s.members.is_empty()
+                    || s.variant_part
+                        .as_ref()
+                        .is_some_and(|v| !v.variants.is_empty())
+            }
+            // Arrays are expandable if they have a known count > 0
+            Some(TypeDef::Array { count, .. }) => count.map(|c| c > 0).unwrap_or(false),
+            // Pointers/references are expandable if they point to an expandable type
+            Some(TypeDef::Pointer(inner) | TypeDef::Reference(inner)) => {
+                self.is_expandable_with_depth(*inner, depth + 1)
+            }
+            _ => false,
         }
     }
 
@@ -472,49 +461,15 @@ impl TypeTable {
 
     /// Get the members of a type (if it's a struct/union)
     pub fn members(&self, id: TypeId) -> Option<&[MemberDef]> {
-        self.members_with_depth(id, 0)
-    }
-
-    fn members_with_depth(&self, id: TypeId, depth: usize) -> Option<&[MemberDef]> {
-        if depth > 20 {
-            return None;
-        }
-
-        let resolved_id = self.resolve(id);
-        match self.get(resolved_id)? {
+        match self.get(self.strip(id)?)? {
             TypeDef::Struct(s) | TypeDef::Union(s) => Some(&s.members),
-            TypeDef::Typedef { underlying, .. } => self.members_with_depth(*underlying, depth + 1),
-            TypeDef::Const(inner) | TypeDef::Volatile(inner) | TypeDef::Restrict(inner) => {
-                self.members_with_depth(*inner, depth + 1)
-            }
-            TypeDef::ForwardDecl {
-                target: Some(target),
-                ..
-            } => self.members_with_depth(*target, depth + 1),
             _ => None,
         }
     }
 
     /// Get the underlying type for typedefs, const, volatile, etc.
     pub fn underlying(&self, id: TypeId) -> TypeId {
-        self.underlying_with_depth(id, 0)
-    }
-
-    fn underlying_with_depth(&self, id: TypeId, depth: usize) -> TypeId {
-        if depth > 20 {
-            return id;
-        }
-
-        let resolved_id = self.resolve(id);
-        match self.get(resolved_id) {
-            Some(TypeDef::Typedef { underlying, .. })
-            | Some(TypeDef::Const(underlying))
-            | Some(TypeDef::Volatile(underlying))
-            | Some(TypeDef::Restrict(underlying)) => {
-                self.underlying_with_depth(*underlying, depth + 1)
-            }
-            _ => resolved_id,
-        }
+        self.strip(id).unwrap_or(id)
     }
 
     /// Convert a TypeId to VariableType
