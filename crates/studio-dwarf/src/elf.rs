@@ -504,7 +504,7 @@ impl ElfParser {
                 .find(|(_, _, name, _)| !symbol.section.is_empty() && *name == symbol.section)
                 .or_else(|| {
                     sections.iter().find(|(addr, size, _, _)| {
-                        symbol.address >= *addr && symbol.address < addr + size
+                        symbol.address >= *addr && symbol.address - *addr < *size
                     })
                 });
             match containing {

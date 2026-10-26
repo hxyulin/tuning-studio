@@ -12,6 +12,9 @@ use crate::variable_type::VariableType;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+/// Longest typedef, qualifier or array chain followed before the debug info is treated as cyclic.
+const MAX_TYPE_DEPTH: usize = 32;
+
 /// A unique identifier for a type in the global type table.
 /// This is just an index into the types vector.
 #[derive(
@@ -681,15 +684,37 @@ impl TypeTable {
 
     /// Resolve a TypeId, following forward declarations to their targets
     pub fn resolve(&self, id: TypeId) -> TypeId {
-        if let Some(TypeDef::ForwardDecl {
-            target: Some(target),
-            ..
-        }) = self.get(id)
-        {
-            self.resolve(*target)
-        } else {
-            id
+        let mut id = id;
+        for _ in 0..MAX_TYPE_DEPTH {
+            match self.get(id) {
+                Some(TypeDef::ForwardDecl {
+                    target: Some(target),
+                    ..
+                }) => id = *target,
+                _ => return id,
+            }
         }
+        // A forward declaration cycle has no definition to resolve to.
+        id
+    }
+
+    /// Follow typedefs, qualifiers and resolved forward declarations to the
+    /// type they wrap. Returns None if the chain is longer than
+    /// `MAX_TYPE_DEPTH`, which only happens when the debug info has a cycle.
+    fn strip(&self, mut id: TypeId) -> Option<TypeId> {
+        for _ in 0..MAX_TYPE_DEPTH {
+            match self.get(id)? {
+                TypeDef::Typedef { underlying: n, .. }
+                | TypeDef::Const(n)
+                | TypeDef::Volatile(n)
+                | TypeDef::Restrict(n)
+                | TypeDef::ForwardDecl {
+                    target: Some(n), ..
+                } => id = *n,
+                _ => return Some(id),
+            }
+        }
+        None
     }
 
     /// Get the resolved type definition
@@ -758,28 +783,33 @@ impl TypeTable {
 
     /// Get the size of a type in bytes
     pub fn type_size(&self, id: TypeId) -> Option<u64> {
-        let resolved_id = self.resolve(id);
-        match self.get(resolved_id)? {
+        self.type_size_with_depth(id, 0)
+    }
+
+    fn type_size_with_depth(&self, id: TypeId, depth: usize) -> Option<u64> {
+        // Arrays recurse into their element, so a self-referencing array needs its own bound.
+        if depth > MAX_TYPE_DEPTH {
+            return None;
+        }
+
+        match self.get(self.strip(id)?)? {
             TypeDef::Primitive(p) => Some(p.size()),
             TypeDef::Pointer(_) | TypeDef::Reference(_) => Some(4),
             TypeDef::Array { element, count } => {
-                let elem_size = self.type_size(*element)?;
-                Some(elem_size * count.unwrap_or(0))
+                let elem_size = self.type_size_with_depth(*element, depth + 1)?;
+                elem_size.checked_mul(count.unwrap_or(0))
             }
             TypeDef::Struct(s) | TypeDef::Union(s) => Some(s.size),
             TypeDef::Enum(e) => Some(e.size),
-            TypeDef::Typedef { underlying, .. } => self.type_size(*underlying),
-            TypeDef::Const(inner) | TypeDef::Volatile(inner) | TypeDef::Restrict(inner) => {
-                self.type_size(*inner)
-            }
             TypeDef::Subroutine { .. } => Some(4),
             TypeDef::Void => Some(0),
             TypeDef::Unknown { size } => Some(*size),
-            TypeDef::ForwardDecl {
-                target: Some(target),
-                ..
-            } => self.type_size(*target),
-            TypeDef::ForwardDecl { target: None, .. } | TypeDef::Placeholder => None,
+            // strip() only stops on these when they cannot be followed further.
+            TypeDef::ForwardDecl { .. } | TypeDef::Placeholder => None,
+            TypeDef::Typedef { .. }
+            | TypeDef::Const(_)
+            | TypeDef::Volatile(_)
+            | TypeDef::Restrict(_) => None,
         }
     }
 
@@ -922,15 +952,13 @@ impl TypeTable {
 
     /// Check if a type can be added as a watchable variable
     pub fn is_addable(&self, id: TypeId) -> bool {
-        let resolved_id = self.resolve(id);
-        match self.get(resolved_id) {
+        let Some(stripped) = self.strip(id) else {
+            return false;
+        };
+        match self.get(stripped) {
             Some(TypeDef::Primitive(_)) => true,
             Some(TypeDef::Enum(_)) => true,
             Some(TypeDef::Pointer(_)) | Some(TypeDef::Reference(_)) => true,
-            Some(TypeDef::Typedef { underlying, .. }) => self.is_addable(*underlying),
-            Some(TypeDef::Const(inner))
-            | Some(TypeDef::Volatile(inner))
-            | Some(TypeDef::Restrict(inner)) => self.is_addable(*inner),
             Some(TypeDef::Struct(_)) | Some(TypeDef::Union(_)) | Some(TypeDef::Array { .. }) => {
                 true
             }
@@ -990,8 +1018,10 @@ impl TypeTable {
 
     /// Convert a TypeId to VariableType
     pub fn to_variable_type(&self, id: TypeId) -> VariableType {
-        let resolved_id = self.resolve(id);
-        match self.get(resolved_id) {
+        let Some(stripped) = self.strip(id) else {
+            return VariableType::Raw(0);
+        };
+        match self.get(stripped) {
             Some(TypeDef::Primitive(prim)) => prim.to_variable_type(),
             Some(TypeDef::Pointer(_)) | Some(TypeDef::Reference(_)) => VariableType::U32,
             Some(TypeDef::Enum(e)) => match e.size {
@@ -1006,13 +1036,9 @@ impl TypeTable {
             }
             Some(TypeDef::Array { element, count }) => {
                 let elem_size = self.type_size(*element).unwrap_or(0);
-                let total = elem_size * count.unwrap_or(1);
+                let total = elem_size.checked_mul(count.unwrap_or(1)).unwrap_or(0);
                 VariableType::Raw(total as usize)
             }
-            Some(TypeDef::Typedef { underlying, .. }) => self.to_variable_type(*underlying),
-            Some(TypeDef::Const(inner))
-            | Some(TypeDef::Volatile(inner))
-            | Some(TypeDef::Restrict(inner)) => self.to_variable_type(*inner),
             Some(TypeDef::Subroutine { .. }) => VariableType::U32,
             Some(TypeDef::Unknown { size }) => VariableType::Raw(*size as usize),
             _ => VariableType::Raw(0),
@@ -1319,6 +1345,61 @@ mod tests {
         assert_eq!(table.type_name(early), table.type_name(id));
         assert!(table.is_rust(early));
         assert_eq!(table.stats().placeholders, 0);
+    }
+
+    /// A typedef whose `DW_AT_type` names itself must not overflow the stack.
+    #[test]
+    fn self_referencing_typedef_is_bounded() {
+        let mut table = TypeTable::new();
+        let id = table.allocate();
+        *table.get_mut(id).unwrap() = TypeDef::Typedef {
+            name: "loop_t".into(),
+            underlying: id,
+        };
+
+        assert_eq!(table.type_size(id), None);
+        assert!(!table.is_addable(id));
+        assert!(matches!(table.to_variable_type(id), VariableType::Raw(0)));
+        assert_eq!(table.resolve(id), id);
+    }
+
+    #[test]
+    fn self_referencing_forward_decl_resolves_in_bounded_steps() {
+        let mut table = TypeTable::new();
+        let id = table.allocate();
+        *table.get_mut(id).unwrap() = TypeDef::ForwardDecl {
+            name: "S".into(),
+            kind: ForwardDeclKind::Struct,
+            target: Some(id),
+        };
+
+        assert_eq!(table.resolve(id), id);
+        assert_eq!(table.type_size(id), None);
+    }
+
+    #[test]
+    fn self_referencing_array_is_bounded() {
+        let mut table = TypeTable::new();
+        let id = table.allocate();
+        *table.get_mut(id).unwrap() = TypeDef::Array {
+            element: id,
+            count: Some(2),
+        };
+
+        assert_eq!(table.type_size(id), None);
+        assert!(matches!(table.to_variable_type(id), VariableType::Raw(0)));
+    }
+
+    #[test]
+    fn array_size_overflow_is_none() {
+        let mut table = TypeTable::new();
+        let int_id = table.insert(TypeDef::Primitive(PrimitiveDef::Int));
+        let id = table.insert(TypeDef::Array {
+            element: int_id,
+            count: Some(u64::MAX),
+        });
+
+        assert_eq!(table.type_size(id), None);
     }
 
     #[test]

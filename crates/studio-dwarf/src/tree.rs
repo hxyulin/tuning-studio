@@ -361,10 +361,14 @@ pub fn children_page(
             at: node.to_string(),
             reason,
         };
-        let count =
-            reader(at.address + length.offset, if elf.is_64bit { 8 } else { 4 }).map_err(bad)?;
-        let pointer =
-            reader(at.address + data.offset, if elf.is_64bit { 8 } else { 4 }).map_err(bad)?;
+        let width = if elf.is_64bit { 8 } else { 4 };
+        let field = |offset: u64| {
+            at.address
+                .checked_add(offset)
+                .ok_or_else(|| bad("address overflow".into()))
+        };
+        let count = reader(field(length.offset)?, width).map_err(bad)?;
+        let pointer = reader(field(data.offset)?, width).map_err(bad)?;
         let stride = table
             .type_size(element)
             .ok_or_else(|| bad("unknown slice element size".into()))?;
@@ -400,7 +404,8 @@ pub fn children_page(
             table,
             node.child(step),
             label,
-            at.address + m.offset,
+            // A wrapped address would read the wrong memory, so saturate and let the read fail.
+            at.address.saturating_add(m.offset),
             m.type_id,
         );
         n.bit_offset = m.bit_offset;
@@ -452,7 +457,7 @@ pub fn children_page(
                         table,
                         node.child(Step::Index(i)),
                         format!("[{i}]"),
-                        at.address + i * elem_size,
+                        at.address.saturating_add(i.saturating_mul(elem_size)),
                         *element,
                     );
                     n.readable = readable;
@@ -679,7 +684,10 @@ fn enter_task(
     }
     Ok(Resolved {
         label: format!("[task {slot}]"),
-        address: sym.address + slot * storage.size,
+        address: slot
+            .checked_mul(storage.size)
+            .and_then(|offset| sym.address.checked_add(offset))
+            .ok_or_else(|| bad("task slot address overflow".into()))?,
         type_id: storage.type_id,
         bit_offset: None,
         bit_size: None,
@@ -1005,9 +1013,19 @@ pub fn preview(
     let mut active_variant = None;
     let text = if let Some((data, length, _, is_str)) = sequence(table, at.type_id) {
         let width = if elf.is_64bit { 8 } else { 4 };
-        let count = word(read(at.address + length.offset, width)?)?;
+        let count = word(read(
+            at.address
+                .checked_add(length.offset)
+                .ok_or("address overflow")?,
+            width,
+        )?)?;
         if is_str {
-            let pointer = word(read(at.address + data.offset, width)?)?;
+            let pointer = word(read(
+                at.address
+                    .checked_add(data.offset)
+                    .ok_or("address overflow")?,
+                width,
+            )?)?;
             if count > 0 && pointer == 0 {
                 return Err("null string pointer".into());
             }
@@ -1042,7 +1060,7 @@ pub fn preview(
                 let part = s.variant_part.as_ref().unwrap();
                 let tag = if let Some(d) = &part.discriminant {
                     word(read(
-                        at.address + d.offset,
+                        at.address.checked_add(d.offset).ok_or("address overflow")?,
                         table.type_size(d.type_id).unwrap_or(0) as usize,
                     )?)?
                 } else {

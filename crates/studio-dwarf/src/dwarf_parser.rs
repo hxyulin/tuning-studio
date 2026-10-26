@@ -271,6 +271,9 @@ struct PendingSymbol {
 
 type Reader<'a> = EndianSlice<'a, RunTimeEndian>;
 
+/// Step limit for location expressions, so a looping `DW_OP_skip` cannot hang the parser.
+const MAX_EXPR_ITERATIONS: u32 = 10_000;
+
 impl<'a> DwarfParser<'a, Reader<'a>> {
     /// Parse DWARF info from raw bytes
     pub fn parse_bytes(data: &'a [u8]) -> Result<DwarfParseResult, String> {
@@ -1289,7 +1292,7 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
                 for member in members {
                     inherited_members.push(MemberDef {
                         name: member.name.clone(),
-                        offset: member.offset + base.offset,
+                        offset: member.offset.saturating_add(base.offset),
                         type_id: member.type_id,
                         bit_offset: member.bit_offset,
                         bit_size: member.bit_size,
@@ -1740,6 +1743,7 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
         expr: &gimli::Expression<Reader<'a>>,
     ) -> VariableStatus {
         let mut evaluation = (*expr).evaluation(unit.encoding());
+        evaluation.set_max_iterations(MAX_EXPR_ITERATIONS);
 
         let mut result = match evaluation.evaluate() {
             Ok(r) => r,
@@ -1904,6 +1908,7 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
         expr: &gimli::Expression<Reader<'a>>,
     ) -> Option<u64> {
         let mut evaluation = (*expr).evaluation(unit.encoding());
+        evaluation.set_max_iterations(MAX_EXPR_ITERATIONS);
 
         // Run the evaluation loop
         let mut result = evaluation.evaluate().ok()?;
@@ -2032,15 +2037,7 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
                     }
                     // Try DW_AT_upper_bound (count = upper_bound + 1)
                     if let Some(attr) = child.entry().attr_value(gimli::DW_AT_upper_bound) {
-                        return match attr {
-                            AttributeValue::Udata(v) => Some(v + 1),
-                            AttributeValue::Data1(v) => Some(v as u64 + 1),
-                            AttributeValue::Data2(v) => Some(v as u64 + 1),
-                            AttributeValue::Data4(v) => Some(v as u64 + 1),
-                            AttributeValue::Data8(v) => Some(v + 1),
-                            AttributeValue::Sdata(v) => Some((v + 1) as u64),
-                            _ => None,
-                        };
+                        return upper_bound_count(attr);
                     }
                 }
             }
@@ -2049,9 +2046,46 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
     }
 }
 
+/// Array element count from a `DW_AT_upper_bound` value. Compilers encode
+/// zero-length and unbounded arrays with an all-ones bound, which has no count.
+fn upper_bound_count(attr: AttributeValue<Reader<'_>>) -> Option<u64> {
+    let bound = match attr {
+        AttributeValue::Udata(v) | AttributeValue::Data8(v) => v,
+        AttributeValue::Data1(v) if v == u8::MAX => return None,
+        AttributeValue::Data2(v) if v == u16::MAX => return None,
+        AttributeValue::Data4(v) if v == u32::MAX => return None,
+        AttributeValue::Data1(v) => v as u64,
+        AttributeValue::Data2(v) => v as u64,
+        AttributeValue::Data4(v) => v as u64,
+        AttributeValue::Sdata(v) => u64::try_from(v).ok()?,
+        _ => return None,
+    };
+    bound.checked_add(1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upper_bound_all_ones_has_no_count() {
+        let count = |v| upper_bound_count(v);
+        assert_eq!(count(AttributeValue::Data8(u64::MAX)), None);
+        assert_eq!(count(AttributeValue::Udata(u64::MAX)), None);
+        assert_eq!(count(AttributeValue::Data4(u32::MAX)), None);
+        assert_eq!(count(AttributeValue::Data2(u16::MAX)), None);
+        assert_eq!(count(AttributeValue::Data1(u8::MAX)), None);
+        assert_eq!(count(AttributeValue::Sdata(-1)), None);
+        assert_eq!(count(AttributeValue::Sdata(-7)), None);
+    }
+
+    #[test]
+    fn upper_bound_adds_one() {
+        assert_eq!(upper_bound_count(AttributeValue::Data1(9)), Some(10));
+        assert_eq!(upper_bound_count(AttributeValue::Data4(0)), Some(1));
+        assert_eq!(upper_bound_count(AttributeValue::Sdata(3)), Some(4));
+        assert_eq!(upper_bound_count(AttributeValue::Data8(99)), Some(100));
+    }
 
     // Test ELF fixtures are embedded at compile time
     const TEST_ARM_ELF: &[u8] = include_bytes!("../tests/fixtures/test_arm.elf");
