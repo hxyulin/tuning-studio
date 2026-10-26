@@ -815,4 +815,112 @@ mod tests {
             SessionCommand::Watch { count: Some(2), .. }
         ));
     }
+
+    fn parse(words: &[&str]) -> SessionCommand {
+        Line::try_parse_from(words).unwrap().command
+    }
+
+    // The words below are what the one-shot commands in main.rs send to a running
+    // session, so a flag renamed here breaks forwarding.
+
+    #[test]
+    fn parses_forwarded_read_and_set() {
+        let SessionCommand::Read { locations } = parse(&["read", "a.b", "0x2000_0000:f32"]) else {
+            panic!("not read");
+        };
+        assert_eq!(locations, ["a.b", "0x2000_0000:f32"]);
+        let SessionCommand::Set { location, value } = parse(&["set", "a.b", "-1.5"]) else {
+            panic!("not set");
+        };
+        assert_eq!((location.as_str(), value.as_str()), ("a.b", "-1.5"));
+    }
+
+    #[test]
+    fn parses_forwarded_watch_tasks_and_trace() {
+        let SessionCommand::Watch {
+            locations,
+            interval,
+            count,
+        } = parse(&["watch", "a", "b", "--interval", "250", "--count", "3"])
+        else {
+            panic!("not watch");
+        };
+        assert_eq!(
+            (locations, interval, count),
+            (vec!["a".into(), "b".into()], 250, Some(3))
+        );
+        let SessionCommand::Watch {
+            interval, count, ..
+        } = parse(&["watch", "a", "--interval", "100"])
+        else {
+            panic!("not watch");
+        };
+        assert_eq!((interval, count), (100, None));
+        let SessionCommand::Tasks { duration } = parse(&["tasks", "--duration", "1000"]) else {
+            panic!("not tasks");
+        };
+        assert_eq!(duration, 1000);
+        let SessionCommand::Trace {
+            locations,
+            duration,
+        } = parse(&["trace", "a", "--duration", "500"])
+        else {
+            panic!("not trace");
+        };
+        assert_eq!((locations, duration), (vec!["a".into()], 500));
+    }
+
+    #[test]
+    fn parses_forwarded_flash_and_reset() {
+        let SessionCommand::Flash {
+            elf,
+            verify,
+            chip_erase,
+            halt,
+        } = parse(&["flash", "/tmp/fw.elf", "--verify", "--chip-erase", "--halt"])
+        else {
+            panic!("not flash");
+        };
+        assert_eq!(elf, Some(PathBuf::from("/tmp/fw.elf")));
+        assert!(verify && chip_erase && halt);
+        let SessionCommand::Flash {
+            verify,
+            chip_erase,
+            halt,
+            ..
+        } = parse(&["flash", "/tmp/fw.elf"])
+        else {
+            panic!("not flash");
+        };
+        assert!(!verify && !chip_erase && !halt);
+        assert!(matches!(
+            parse(&["reset", "--halt"]),
+            SessionCommand::Reset { halt: true }
+        ));
+        assert!(matches!(
+            parse(&["reset"]),
+            SessionCommand::Reset { halt: false }
+        ));
+    }
+
+    #[test]
+    fn parses_forwarded_plain_commands() {
+        assert!(matches!(parse(&["values"]), SessionCommand::Values));
+        assert!(matches!(parse(&["halt"]), SessionCommand::Halt));
+        assert!(matches!(parse(&["resume"]), SessionCommand::Resume));
+        assert!(matches!(parse(&["step"]), SessionCommand::Step));
+        assert!(matches!(parse(&["status"]), SessionCommand::Status));
+        let SessionCommand::Break { target } = parse(&["break", "control::tick"]) else {
+            panic!("not break");
+        };
+        assert_eq!(target, "control::tick");
+        let SessionCommand::Delete { ids } = parse(&["delete", "1", "3"]) else {
+            panic!("not delete");
+        };
+        assert_eq!(ids, [1, 3]);
+        let SessionCommand::Delete { ids } = parse(&["delete"]) else {
+            panic!("not delete");
+        };
+        assert!(ids.is_empty());
+    }
 }

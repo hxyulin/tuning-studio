@@ -755,6 +755,55 @@ mod tests {
         assert!(Cli::try_parse_from(["tuning", "watch", "0x2000_0000", "--count", "2"]).is_ok());
     }
 
+    fn parse(args: &[&str]) -> Command {
+        let args = ["tuning"].into_iter().chain(args.iter().copied());
+        Cli::try_parse_from(args).unwrap().command
+    }
+
+    // These are the forms main() forwards to a running session, so the flags here
+    // must exist in the session grammar too.
+    #[test]
+    fn parses_the_commands_a_session_serves() {
+        let Command::Watch {
+            interval, count, ..
+        } = parse(&["watch", "a", "--elf", "fw.elf", "--count", "4"])
+        else {
+            panic!("not watch");
+        };
+        assert_eq!((interval, count), (100, Some(4)));
+        let Command::Tasks { duration, .. } = parse(&["tasks"]) else {
+            panic!("not tasks");
+        };
+        assert_eq!(duration, 1000);
+        let Command::Trace { duration, .. } = parse(&["trace", "a", "--duration", "5"]) else {
+            panic!("not trace");
+        };
+        assert_eq!(duration, 5);
+        let Command::Set { value, .. } = parse(&["set", "a", "-2"]) else {
+            panic!("not set");
+        };
+        assert_eq!(value, "-2");
+        let Command::Flash {
+            verify,
+            chip_erase,
+            halt,
+            ..
+        } = parse(&["flash", "fw.elf", "--verify", "--chip-erase", "--halt"])
+        else {
+            panic!("not flash");
+        };
+        assert!(verify && chip_erase && halt);
+        assert!(matches!(
+            parse(&["reset", "--halt"]),
+            Command::Reset { halt: true, .. }
+        ));
+        assert!(matches!(parse(&["break", "main"]), Command::Break { .. }));
+        let Command::Delete { ids, .. } = parse(&["delete", "2"]) else {
+            panic!("not delete");
+        };
+        assert_eq!(ids, [2]);
+    }
+
     #[test]
     fn sets_scalars_only() {
         let elf = ElfParser::parse(format!(
