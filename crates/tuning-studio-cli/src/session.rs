@@ -227,11 +227,7 @@ pub fn run(target: &Target, elf: Option<ElfInfo>, options: Options) -> Result<()
         if let Some(logs) = &mut state.logs
             && now >= next_logs
         {
-            let text = logs.poll(&mut target.session.lock());
-            match text {
-                Ok(text) => print!("{text}"),
-                Err(e) => println!("error: could not read RTT: {e:#}"),
-            }
+            print_logs(logs, &mut target.session.lock());
             next_logs = now + LOG_INTERVAL;
         }
         if now >= next_status {
@@ -248,80 +244,18 @@ pub fn run(target: &Target, elf: Option<ElfInfo>, options: Options) -> Result<()
             wake = wake.min(next_logs);
         }
         if let Some(server) = &mut server {
-            let connected = server.is_connected();
-            let wait = server
-                .process()
-                .map_err(|e| anyhow!("GDB server failed: {e:#}"))?;
-            match (connected, server.is_connected()) {
-                (false, true) => println!("GDB connected"),
-                // GDB expects `detach` to resume the program; the probe-rs stub does not.
-                (true, false) => {
-                    let mut session = target.session.lock();
-                    if matches!(debug::status(&mut session)?, CoreStatus::Halted(_)) {
-                        debug::resume(&mut session)?;
-                        state.status = Some(CoreStatus::Running);
-                        println!("GDB disconnected; resumed the core");
-                    } else {
-                        println!("GDB disconnected");
-                    }
-                }
-                _ => {}
-            }
-            wake = wake.min(Instant::now() + wait);
+            wake = wake.min(Instant::now() + serve_gdb(target, &mut state, server)?);
         }
         std::io::stdout().flush()?;
 
         let timeout = wake.saturating_duration_since(Instant::now());
-        let (sink, words) = match input.recv_timeout(timeout) {
-            Ok(Input::Stdin(line)) => match shlex::split(&line) {
-                Some(words) if words.is_empty() => continue,
-                Some(words) => (Sink::Stdout, words),
-                None => {
-                    println!("error: unbalanced quotes");
-                    continue;
-                }
-            },
-            Ok(Input::Connected(id, stream)) => {
-                let _ = stream.set_write_timeout(Some(CLIENT_WRITE_TIMEOUT));
-                state.clients.insert(id, stream);
-                continue;
-            }
-            Ok(Input::Request(id, line)) => match serde_json::from_str::<Request>(&line) {
-                Ok(request) => (Sink::Client(id), request.args),
-                Err(e) => {
-                    state.finish(
-                        Sink::Client(id),
-                        String::new(),
-                        Some(format!("bad request: {e}")),
-                    );
-                    continue;
-                }
-            },
-            Ok(Input::Disconnected(id)) => {
-                state.drop_client(id);
-                continue;
-            }
-            Err(RecvTimeoutError::Timeout) => continue,
-            Err(RecvTimeoutError::Disconnected) => break,
+        let (sink, words) = match next_command(&input, &mut state, timeout) {
+            Next::Command(sink, words) => (sink, words),
+            Next::Idle => continue,
+            Next::Closed => break,
         };
-        let mut output = String::new();
-        match handle(target, &mut state, sink, words, &mut output) {
-            Ok(Outcome::Done) => state.finish(sink, output, None),
-            Ok(Outcome::Watching) => match sink {
-                Sink::Stdout => print!("{output}"),
-                Sink::Client(id) => state.send(
-                    id,
-                    &Response {
-                        output: Some(output),
-                        ..Response::default()
-                    },
-                ),
-            },
-            Ok(Outcome::Quit) => {
-                state.finish(sink, output, None);
-                break 'session;
-            }
-            Err(e) => state.finish(sink, output, Some(format!("{e:#}"))),
+        if let Outcome::Quit = run_command(target, &mut state, sink, words) {
+            break 'session;
         }
         // Report a halt or resume the command caused before anything else.
         next_status = Instant::now();
@@ -335,6 +269,108 @@ pub fn run(target: &Target, elf: Option<ElfInfo>, options: Options) -> Result<()
         println!("resumed the core before detaching");
     }
     Ok(())
+}
+
+/// What `next_command` found within its timeout
+enum Next {
+    Command(Sink, Vec<String>),
+    /// Nothing to run yet, or the input was not a command
+    Idle,
+    /// Every sender is gone
+    Closed,
+}
+
+/// Wait up to `timeout` for input. Connections and disconnections update `state`.
+fn next_command(input: &mpsc::Receiver<Input>, state: &mut State, timeout: Duration) -> Next {
+    match input.recv_timeout(timeout) {
+        Ok(Input::Stdin(line)) => match shlex::split(&line) {
+            Some(words) if words.is_empty() => Next::Idle,
+            Some(words) => Next::Command(Sink::Stdout, words),
+            None => {
+                println!("error: unbalanced quotes");
+                Next::Idle
+            }
+        },
+        Ok(Input::Connected(id, stream)) => {
+            let _ = stream.set_write_timeout(Some(CLIENT_WRITE_TIMEOUT));
+            state.clients.insert(id, stream);
+            Next::Idle
+        }
+        Ok(Input::Request(id, line)) => match serde_json::from_str::<Request>(&line) {
+            Ok(request) => Next::Command(Sink::Client(id), request.args),
+            Err(e) => {
+                state.finish(
+                    Sink::Client(id),
+                    String::new(),
+                    Some(format!("bad request: {e}")),
+                );
+                Next::Idle
+            }
+        },
+        Ok(Input::Disconnected(id)) => {
+            state.drop_client(id);
+            Next::Idle
+        }
+        Err(RecvTimeoutError::Timeout) => Next::Idle,
+        Err(RecvTimeoutError::Disconnected) => Next::Closed,
+    }
+}
+
+/// Run one command and send its output to `sink`. Returns `Quit` when the command
+/// ends the session.
+fn run_command(target: &Target, state: &mut State, sink: Sink, words: Vec<String>) -> Outcome {
+    let mut output = String::new();
+    match handle(target, state, sink, words, &mut output) {
+        Ok(Outcome::Done) => state.finish(sink, output, None),
+        Ok(Outcome::Watching) => match sink {
+            Sink::Stdout => print!("{output}"),
+            Sink::Client(id) => state.send(
+                id,
+                &Response {
+                    output: Some(output),
+                    ..Response::default()
+                },
+            ),
+        },
+        Ok(Outcome::Quit) => {
+            state.finish(sink, output, None);
+            return Outcome::Quit;
+        }
+        Err(e) => state.finish(sink, output, Some(format!("{e:#}"))),
+    }
+    Outcome::Done
+}
+
+/// Run the GDB server for one round, and report when GDB connects or disconnects.
+/// Returns how long the server can wait before it needs to run again.
+fn serve_gdb(target: &Target, state: &mut State, server: &mut gdb::Server) -> Result<Duration> {
+    let connected = server.is_connected();
+    let wait = server
+        .process()
+        .map_err(|e| anyhow!("GDB server failed: {e:#}"))?;
+    match (connected, server.is_connected()) {
+        (false, true) => println!("GDB connected"),
+        // GDB expects `detach` to resume the program; the probe-rs stub does not.
+        (true, false) => {
+            let mut session = target.session.lock();
+            if matches!(debug::status(&mut session)?, CoreStatus::Halted(_)) {
+                debug::resume(&mut session)?;
+                state.status = Some(CoreStatus::Running);
+                println!("GDB disconnected; resumed the core");
+            } else {
+                println!("GDB disconnected");
+            }
+        }
+        _ => {}
+    }
+    Ok(wait)
+}
+
+fn print_logs(logs: &mut Logs, session: &mut Session) {
+    match logs.poll(session) {
+        Ok(text) => print!("{text}"),
+        Err(e) => println!("error: could not read RTT: {e:#}"),
+    }
 }
 
 /// Accept clients and forward their requests, one line each.
@@ -556,10 +592,7 @@ fn report_status(target: &Target, state: &mut State) -> Result<()> {
     if state.status != Some(status) {
         state.status = Some(status);
         if let Some(logs) = &mut state.logs {
-            match logs.poll(&mut session) {
-                Ok(text) => print!("{text}"),
-                Err(e) => println!("error: could not read RTT: {e:#}"),
-            }
+            print_logs(logs, &mut session);
         }
         println!("{}", describe(state, &mut session, status)?);
     }
