@@ -32,7 +32,7 @@ impl std::fmt::Display for TypeId {
 
 /// Key for mapping DWARF DIE locations to TypeIds
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct DwarfTypeKey {
+pub(crate) struct DwarfTypeKey {
     pub unit_index: usize,
     pub offset: usize,
 }
@@ -46,7 +46,7 @@ impl DwarfTypeKey {
 /// A unified key that can represent either a unit-local or global DWARF type reference.
 /// ARM compilers often use DW_FORM_ref_addr (global offsets) instead of DW_FORM_ref* (unit-local).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum GlobalTypeKey {
+pub(crate) enum GlobalTypeKey {
     /// Unit-local reference (unit_index + local offset within the unit)
     UnitLocal(DwarfTypeKey),
     /// Global reference (absolute offset in .debug_info section)
@@ -67,10 +67,10 @@ impl GlobalTypeKey {
 
     /// Convert to DwarfTypeKey for backwards compatibility
     /// Global keys use a sentinel unit_index of usize::MAX
-    pub fn to_dwarf_key(&self) -> DwarfTypeKey {
+    pub fn to_dwarf_key(self) -> DwarfTypeKey {
         match self {
-            GlobalTypeKey::UnitLocal(key) => *key,
-            GlobalTypeKey::Global(offset) => DwarfTypeKey::new(usize::MAX, *offset),
+            GlobalTypeKey::UnitLocal(key) => key,
+            GlobalTypeKey::Global(offset) => DwarfTypeKey::new(usize::MAX, offset),
         }
     }
 }
@@ -83,6 +83,7 @@ impl From<DwarfTypeKey> for GlobalTypeKey {
 
 /// A type definition in the type table
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum TypeDef {
     /// Primitive/base types (int, float, bool, etc.)
     Primitive(PrimitiveDef),

@@ -1,7 +1,7 @@
 //! Handlers for the type DIEs: base types, structs, enums and the like, plus the passes that finish them.
 
 use super::{DwarfParser, Reader};
-use crate::type_table::*;
+use crate::types::*;
 use gimli::{AttributeValue, DebuggingInformationEntry, ReaderOffset, Unit, UnitOffset};
 
 impl<'a> DwarfParser<'a, Reader<'a>> {
@@ -566,7 +566,7 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
             self.resolve_inherited_members_for(resolved_base_id, visited);
 
             // Then collect its members
-            if let Some(members) = self.type_table.get_members(resolved_base_id) {
+            if let Some(members) = self.type_table.members(resolved_base_id) {
                 for member in members {
                     inherited_members.push(MemberDef {
                         name: member.name.clone(),

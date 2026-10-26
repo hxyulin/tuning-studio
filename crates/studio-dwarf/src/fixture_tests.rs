@@ -5,14 +5,14 @@
 //! - Type table construction
 //! - Variable discovery
 
-use studio_dwarf::DwarfParser;
+use crate::dwarf_parser::DwarfParser;
 
 // Test fixtures compiled at build time
-const TEST_ARM_ELF: &[u8] = include_bytes!("fixtures/test_arm.elf");
-const TEST_STRUCT_ELF: &[u8] = include_bytes!("fixtures/test_struct.elf");
-const TEST_POINTER_ELF: &[u8] = include_bytes!("fixtures/test_pointer.elf");
-const TEST_COMPLEX_C_ELF: &[u8] = include_bytes!("fixtures/test_complex_c.elf");
-const TEST_CPP_ELF: &[u8] = include_bytes!("fixtures/test_cpp.elf");
+const TEST_ARM_ELF: &[u8] = include_bytes!("../tests/fixtures/test_arm.elf");
+const TEST_STRUCT_ELF: &[u8] = include_bytes!("../tests/fixtures/test_struct.elf");
+const TEST_POINTER_ELF: &[u8] = include_bytes!("../tests/fixtures/test_pointer.elf");
+const TEST_COMPLEX_C_ELF: &[u8] = include_bytes!("../tests/fixtures/test_complex_c.elf");
+const TEST_CPP_ELF: &[u8] = include_bytes!("../tests/fixtures/test_cpp.elf");
 
 #[test]
 fn test_parse_basic_c_elf() {
@@ -64,7 +64,7 @@ fn test_parse_struct_elf() {
 
     // Verify struct has members in type table
     if let Some(var) = sensor_struct {
-        let members = result.type_table.get_members(var.type_id);
+        let members = result.type_table.members(var.type_id);
         assert!(members.is_some(), "Struct should have members");
 
         if let Some(members) = members {

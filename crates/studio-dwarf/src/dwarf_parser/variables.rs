@@ -2,9 +2,10 @@
 
 use super::status::VariableStatus;
 use super::{DwarfParser, Reader};
-use crate::type_table::*;
+use crate::types::*;
 use gimli::{AttributeValue, DebuggingInformationEntry, ReaderOffset, Unit};
 
+/// Cached information about a variable (for abstract_origin/specification resolution)
 #[derive(Debug, Clone)]
 pub(super) struct VariableInfo {
     pub(super) name: Option<String>,

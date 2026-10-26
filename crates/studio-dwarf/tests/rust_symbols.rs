@@ -4,8 +4,8 @@
 //! release profile for thumbv7em-none-eabihf, once with the default v0 mangling and
 //! once with legacy mangling. See `tests/fixtures/README.md`.
 
-use studio_dwarf::type_table::{MemberDef, TypeDef, VariantPart};
 use studio_dwarf::{ElfInfo, ElfParser, SymbolType, TrackedSymbol, TypeId, diff_symbols};
+use studio_dwarf::{MemberDef, TypeDef, VariantPart};
 
 const RUST_V0_ELF: &[u8] = include_bytes!("fixtures/rust_v0.elf");
 const RUST_LEGACY_ELF: &[u8] = include_bytes!("fixtures/rust_legacy.elf");
@@ -37,7 +37,7 @@ fn both() -> [(&'static str, ElfInfo); 2] {
 
 fn ram_variables(elf: &ElfInfo) -> Vec<&studio_dwarf::SymbolInfo> {
     let mut vars: Vec<_> = elf
-        .get_variables()
+        .variables()
         .into_iter()
         .filter(|s| (0x2000_0000..0x2001_0000).contains(&s.address))
         .collect();
@@ -55,7 +55,7 @@ fn statics_resolve_by_full_path_with_rust_type_names() {
             assert_eq!(sym.symbol_type, SymbolType::Variable, "{label}: {path}");
             assert!(sym.is_readable(), "{label}: {path}");
             assert!(sym.writable, "{label}: {path} should be in RAM");
-            assert_eq!(elf.get_symbol_type_name(sym), *type_name, "{label}: {path}");
+            assert_eq!(elf.symbol_type_name(sym), *type_name, "{label}: {path}");
         }
     }
 }
@@ -63,7 +63,7 @@ fn statics_resolve_by_full_path_with_rust_type_names() {
 #[test]
 fn paths_carry_no_hashes() {
     for (label, elf) in both() {
-        for sym in &elf.symbols {
+        for sym in elf.symbols() {
             let p = &sym.demangled_name;
             assert!(!p.contains('['), "{label}: crate disambiguator in {p}");
             assert!(!p.contains(".llvm."), "{label}: LTO suffix in {p}");
@@ -86,13 +86,7 @@ fn mangling_scheme_does_not_change_identity() {
     let describe = |elf: &ElfInfo| -> Vec<(String, u64, String)> {
         ram_variables(elf)
             .into_iter()
-            .map(|s| {
-                (
-                    s.demangled_name.clone(),
-                    s.address,
-                    elf.get_symbol_type_name(s),
-                )
-            })
+            .map(|s| (s.demangled_name.clone(), s.address, elf.symbol_type_name(s)))
             .collect()
     };
     assert_eq!(describe(&v0), describe(&legacy));
@@ -113,7 +107,7 @@ fn mangling_scheme_does_not_change_identity() {
 /// Walks `name` through structs, tuple wrappers (`__0`) and `UnsafeCell::value`.
 fn member(elf: &ElfInfo, ty: TypeId, name: &str) -> MemberDef {
     let table = elf.type_table();
-    match table.get(table.get_underlying(ty)) {
+    match table.get(table.underlying(ty)) {
         Some(TypeDef::Struct(s)) => s
             .members
             .iter()
@@ -126,7 +120,7 @@ fn member(elf: &ElfInfo, ty: TypeId, name: &str) -> MemberDef {
 
 fn variant_part(elf: &ElfInfo, ty: TypeId) -> VariantPart {
     let table = elf.type_table();
-    match table.get(table.get_underlying(ty)) {
+    match table.get(table.underlying(ty)) {
         Some(TypeDef::Struct(s)) => s.variant_part.clone().expect("variant part"),
         other => panic!("not an enum: {other:?}"),
     }
@@ -159,7 +153,7 @@ fn nested_struct_members_have_offsets_and_types() {
         assert_eq!(member(&elf, offset.type_id, "__1").offset, 2, "{label}");
 
         let mode = member(&elf, g, "mode");
-        match table.get(table.get_underlying(mode.type_id)) {
+        match table.get(table.underlying(mode.type_id)) {
             Some(TypeDef::Enum(e)) => {
                 let v: Vec<_> = e
                     .variants
@@ -243,13 +237,13 @@ fn real_firmware_elf() {
     let path = std::env::var("STUDIO_DWARF_ELF").expect("STUDIO_DWARF_ELF");
     let elf = ElfParser::parse(&path).unwrap();
     let statics: Vec<_> = elf
-        .get_variables()
+        .variables()
         .into_iter()
         .filter(|s| s.is_readable() && s.type_id.is_some() && s.demangled_name.contains("::"))
         .collect();
     assert!(!statics.is_empty(), "no typed Rust statics in {path}");
     assert!(
-        elf.symbols
+        elf.symbols()
             .iter()
             .filter(|s| s.section == ".defmt")
             .all(|s| !s.writable),
@@ -257,7 +251,7 @@ fn real_firmware_elf() {
     );
     for s in &statics {
         assert!(!s.demangled_name.contains('['), "{}", s.demangled_name);
-        let _ = elf.get_symbol_type_name(s);
+        let _ = elf.symbol_type_name(s);
     }
     eprintln!("{} typed Rust statics", statics.len());
 }

@@ -44,7 +44,7 @@ impl TypeHandle {
 
     /// Get the resolved type definition (follows forward declarations)
     pub fn resolved_def(&self) -> Option<&TypeDef> {
-        self.table.get_resolved(self.id)
+        self.table.resolved(self.id)
     }
 
     /// Get the resolved TypeHandle
@@ -74,12 +74,12 @@ impl TypeHandle {
 
     /// Get the members of this type (if struct/union)
     pub fn members(&self) -> Option<&[MemberDef]> {
-        self.table.get_members(self.id)
+        self.table.members(self.id)
     }
 
     /// Get the underlying type (strips typedefs, qualifiers)
     pub fn underlying(&self) -> TypeHandle {
-        TypeHandle::new(self.table.clone(), self.table.get_underlying(self.id))
+        TypeHandle::new(self.table.clone(), self.table.underlying(self.id))
     }
 
     /// Convert to VariableType
@@ -101,7 +101,7 @@ impl TypeHandle {
     /// Kind checks use this so `volatile Foo` and `typedef Foo *Bar` classify
     /// the same as `Foo` and `Foo *`.
     fn underlying_def(&self) -> Option<&TypeDef> {
-        self.table.get(self.table.get_underlying(self.id))
+        self.table.get(self.table.underlying(self.id))
     }
 
     /// Check if this is a struct or union

@@ -14,7 +14,8 @@ use serde::Serialize;
 
 use crate::elf::ElfInfo;
 use crate::tree::{self, NodeKind, NodeRef, RootNode, Step, SymbolNode, TreeError, split_path};
-use crate::type_table::{SourceLocation, TypeDef, TypeId, TypeTable};
+use crate::type_table::TypeTable;
+use crate::types::{SourceLocation, TypeDef, TypeId};
 
 /// One slot of a task pool: a task that can run once at a time.
 #[derive(Debug, Clone, Serialize)]
@@ -48,7 +49,7 @@ pub(crate) struct Storage {
 pub fn tasks(elf: &ElfInfo) -> Vec<Task> {
     let table = elf.type_table();
     let mut out = Vec::new();
-    for sym in elf.get_variables() {
+    for sym in elf.variables() {
         let Some(storage) = storage_type(table, &sym.demangled_name, sym.size) else {
             continue;
         };

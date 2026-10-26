@@ -81,7 +81,7 @@ pub enum StatsError {
 impl StatsLayout {
     /// The firmware's task counters, or `None` when it does not link `rm-task-stats`.
     pub fn find(elf: &ElfInfo) -> Result<Option<Self>, StatsError> {
-        let Some(sym) = elf.get_variables().into_iter().find(|v| {
+        let Some(sym) = elf.variables().into_iter().find(|v| {
             v.demangled_name == "RM_TASK_STATS" || v.demangled_name.ends_with("::RM_TASK_STATS")
         }) else {
             return Ok(None);

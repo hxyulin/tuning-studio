@@ -1,7 +1,7 @@
 //! Attribute readers shared by the type and variable handlers.
 
 use super::{DwarfParser, Reader};
-use crate::type_table::*;
+use crate::types::*;
 use gimli::{AttributeValue, DebuggingInformationEntry, ReaderOffset, Unit, UnitOffset};
 
 impl<'a> DwarfParser<'a, Reader<'a>> {

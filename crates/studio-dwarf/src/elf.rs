@@ -12,7 +12,9 @@
 
 use crate::dwarf_parser::{DwarfDiagnostics, DwarfParser, ParsedSymbol, VariableStatus};
 use crate::error::{Error, Result};
-use crate::type_table::{MemberDef, SharedTypeTable, TypeHandle, TypeId, TypeTable};
+use crate::type_handle::TypeHandle;
+use crate::type_table::{SharedTypeTable, TypeTable};
+use crate::types::{MemberDef, TypeId};
 use crate::variable_type::VariableType;
 use cpp_demangle::Symbol as CppSymbol;
 use object::{Object, ObjectSection, ObjectSymbol, SymbolKind};
@@ -150,7 +152,7 @@ pub struct ElfInfo {
     /// Machine type (e.g., ARM, x86)
     pub machine: String,
     /// All symbols found
-    pub symbols: Vec<SymbolInfo>,
+    symbols: Vec<SymbolInfo>,
     /// Symbols indexed by name
     symbols_by_name: HashMap<String, usize>,
     /// Symbols indexed by address
@@ -188,18 +190,23 @@ impl ElfInfo {
         self.diagnostics = diagnostics;
     }
 
+    /// All symbols found
+    pub fn symbols(&self) -> &[SymbolInfo] {
+        &self.symbols
+    }
+
     /// Get a reference to the shared type table
     pub fn type_table(&self) -> &SharedTypeTable {
         &self.type_table
     }
 
     /// Get DWARF parsing diagnostics
-    pub fn get_diagnostics(&self) -> &DwarfDiagnostics {
+    pub fn diagnostics(&self) -> &DwarfDiagnostics {
         &self.diagnostics
     }
 
     /// Get the status of a specific symbol
-    pub fn get_symbol_status<'a>(&self, symbol: &'a SymbolInfo) -> Option<&'a VariableStatus> {
+    pub fn symbol_status<'a>(&self, symbol: &'a SymbolInfo) -> Option<&'a VariableStatus> {
         symbol.status.as_ref()
     }
 
@@ -248,7 +255,7 @@ impl ElfInfo {
     }
 
     /// Get all variable symbols
-    pub fn get_variables(&self) -> Vec<&SymbolInfo> {
+    pub fn variables(&self) -> Vec<&SymbolInfo> {
         self.symbols
             .iter()
             .filter(|s| s.symbol_type == SymbolType::Variable)
@@ -256,7 +263,7 @@ impl ElfInfo {
     }
 
     /// Get all function symbols
-    pub fn get_functions(&self) -> Vec<&SymbolInfo> {
+    pub fn functions(&self) -> Vec<&SymbolInfo> {
         self.symbols
             .iter()
             .filter(|s| s.symbol_type == SymbolType::Function)
@@ -326,21 +333,19 @@ impl ElfInfo {
     }
 
     /// Get the type name for a symbol
-    pub fn get_symbol_type_name(&self, symbol: &SymbolInfo) -> String {
+    pub fn symbol_type_name(&self, symbol: &SymbolInfo) -> String {
         self.symbol_type_handle(symbol)
             .map(|h| h.type_name())
             .unwrap_or_else(|| "unknown".to_string())
     }
 
     /// Get the members of a symbol's type
-    pub fn get_symbol_members(&self, symbol: &SymbolInfo) -> Option<&[MemberDef]> {
-        symbol
-            .type_id
-            .and_then(|id| self.type_table.get_members(id))
+    pub fn symbol_members(&self, symbol: &SymbolInfo) -> Option<&[MemberDef]> {
+        symbol.type_id.and_then(|id| self.type_table.members(id))
     }
 
     /// Get the underlying TypeHandle for a symbol (strips typedefs, qualifiers)
-    pub fn get_symbol_underlying_type(&self, symbol: &SymbolInfo) -> Option<TypeHandle> {
+    pub fn symbol_underlying_type(&self, symbol: &SymbolInfo) -> Option<TypeHandle> {
         self.symbol_type_handle(symbol).map(|h| h.underlying())
     }
 }
@@ -778,7 +783,7 @@ mod tests {
         let sym = elf.find_symbol("sensor_struct").expect("sensor_struct");
         assert!(elf.is_symbol_complex(sym));
         let names: Vec<_> = elf
-            .get_symbol_members(sym)
+            .symbol_members(sym)
             .unwrap()
             .iter()
             .map(|m| m.name.as_str())

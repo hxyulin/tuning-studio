@@ -146,7 +146,7 @@ pub fn describe_status(
 /// `0x08000512 (main + 0x12)`, or the bare address outside every function.
 pub fn describe_address(elf: Option<&ElfInfo>, address: u64) -> String {
     let function = elf.and_then(|elf| {
-        elf.get_functions()
+        elf.functions()
             .into_iter()
             .map(|f| (f, f.address & !1))
             .find(|&(f, start)| start <= address && address < start + f.size.max(1))
@@ -164,7 +164,7 @@ pub fn describe_address(elf: Option<&ElfInfo>, address: u64) -> String {
 
 /// A function by its full name, or by a `::name` suffix that only one function has.
 fn find_function<'e>(elf: &'e ElfInfo, name: &str) -> Result<&'e SymbolInfo> {
-    let functions = elf.get_functions();
+    let functions = elf.functions();
     if let Some(f) = functions
         .iter()
         .find(|f| f.demangled_name == name || f.mangled_name == name)

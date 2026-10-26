@@ -223,7 +223,7 @@ pub struct Functions {
 impl Functions {
     pub fn new(elf: &ElfInfo) -> Self {
         let mut ranges: Vec<_> = elf
-            .get_functions()
+            .functions()
             .into_iter()
             .filter(|f| f.size > 0)
             .map(|f| {

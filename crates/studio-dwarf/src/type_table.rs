@@ -8,8 +8,7 @@
 //!
 //! The TypeHandle struct wraps `Arc<TypeTable>` + TypeId for zero-overhead type access.
 
-pub use crate::type_handle::TypeHandle;
-pub use crate::types::*;
+use crate::types::*;
 use crate::variable_type::VariableType;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -54,7 +53,7 @@ impl TypeTable {
     }
 
     /// Mark a type as coming from a Rust compile unit
-    pub fn mark_rust(&mut self, id: TypeId) {
+    pub(crate) fn mark_rust(&mut self, id: TypeId) {
         self.rust_types.insert(id);
     }
 
@@ -64,7 +63,7 @@ impl TypeTable {
     }
 
     /// Record the compiler's own spelling of a type name
-    pub fn set_source_name(&mut self, id: TypeId, name: String) {
+    pub(crate) fn set_source_name(&mut self, id: TypeId, name: String) {
         self.source_names.insert(id, name);
     }
 
@@ -84,14 +83,14 @@ impl TypeTable {
     }
 
     /// Allocate a new type ID without setting its definition
-    pub fn allocate(&mut self) -> TypeId {
+    pub(crate) fn allocate(&mut self) -> TypeId {
         let id = TypeId(self.types.len() as u32);
         self.types.push(TypeDef::Placeholder);
         id
     }
 
     /// Get or create a TypeId for a DWARF key
-    pub fn get_or_allocate(&mut self, key: DwarfTypeKey) -> TypeId {
+    pub(crate) fn get_or_allocate(&mut self, key: DwarfTypeKey) -> TypeId {
         if let Some(&id) = self.dwarf_to_id.get(&key) {
             return id;
         }
@@ -101,21 +100,21 @@ impl TypeTable {
     }
 
     /// Get the TypeId for a DWARF key if it exists
-    pub fn get_by_dwarf_key(&self, key: DwarfTypeKey) -> Option<TypeId> {
+    pub(crate) fn get_by_dwarf_key(&self, key: DwarfTypeKey) -> Option<TypeId> {
         self.dwarf_to_id.get(&key).copied()
     }
 
     /// Register an existing TypeId under an additional key.
     /// This is used to register the same type under both its unit-local key
     /// and its global .debug_info offset, so that DebugInfoRef lookups work.
-    pub fn register_alias(&mut self, key: DwarfTypeKey, id: TypeId) {
+    pub(crate) fn register_alias(&mut self, key: DwarfTypeKey, id: TypeId) {
         self.dwarf_to_id.entry(key).or_insert(id);
     }
 
     /// Give a still-empty `id` the definition of `from`. A reference by global
     /// offset allocates a type before the DIE it names is parsed under its
     /// unit-local key, and the alias registered then keeps the empty one.
-    pub fn fill_placeholder(&mut self, id: TypeId, from: TypeId) {
+    pub(crate) fn fill_placeholder(&mut self, id: TypeId, from: TypeId) {
         if id == from || !matches!(self.get(id), Some(TypeDef::Placeholder)) {
             return;
         }
@@ -133,7 +132,7 @@ impl TypeTable {
     }
 
     /// Define a type at the given TypeId
-    pub fn define(&mut self, id: TypeId, def: TypeDef) {
+    pub(crate) fn define(&mut self, id: TypeId, def: TypeDef) {
         assert!(
             (id.0 as usize) < self.types.len(),
             "TypeId {} out of range",
@@ -157,14 +156,14 @@ impl TypeTable {
     }
 
     /// Insert a new type and return its TypeId
-    pub fn insert(&mut self, def: TypeDef) -> TypeId {
+    pub(crate) fn insert(&mut self, def: TypeDef) -> TypeId {
         let id = self.allocate();
         self.define(id, def);
         id
     }
 
     /// Insert a type for a DWARF key
-    pub fn insert_for_key(&mut self, key: DwarfTypeKey, def: TypeDef) -> TypeId {
+    pub(crate) fn insert_for_key(&mut self, key: DwarfTypeKey, def: TypeDef) -> TypeId {
         let id = self.get_or_allocate(key);
         self.define(id, def);
         id
@@ -179,7 +178,7 @@ impl TypeTable {
     }
 
     /// Get a mutable reference to a type definition
-    pub fn get_mut(&mut self, id: TypeId) -> Option<&mut TypeDef> {
+    pub(crate) fn get_mut(&mut self, id: TypeId) -> Option<&mut TypeDef> {
         if id == TypeId::INVALID {
             return None;
         }
@@ -222,7 +221,7 @@ impl TypeTable {
     }
 
     /// Get the resolved type definition
-    pub fn get_resolved(&self, id: TypeId) -> Option<&TypeDef> {
+    pub fn resolved(&self, id: TypeId) -> Option<&TypeDef> {
         self.get(self.resolve(id))
     }
 
@@ -257,7 +256,7 @@ impl TypeTable {
     }
 
     /// Resolve all pending forward declarations
-    pub fn resolve_forward_declarations(&mut self) {
+    pub(crate) fn resolve_forward_declarations(&mut self) {
         let pending = std::mem::take(&mut self.pending_forward_decls);
         let mut resolved_count = 0;
 
@@ -472,11 +471,11 @@ impl TypeTable {
     }
 
     /// Get the members of a type (if it's a struct/union)
-    pub fn get_members(&self, id: TypeId) -> Option<&[MemberDef]> {
-        self.get_members_with_depth(id, 0)
+    pub fn members(&self, id: TypeId) -> Option<&[MemberDef]> {
+        self.members_with_depth(id, 0)
     }
 
-    fn get_members_with_depth(&self, id: TypeId, depth: usize) -> Option<&[MemberDef]> {
+    fn members_with_depth(&self, id: TypeId, depth: usize) -> Option<&[MemberDef]> {
         if depth > 20 {
             return None;
         }
@@ -484,26 +483,24 @@ impl TypeTable {
         let resolved_id = self.resolve(id);
         match self.get(resolved_id)? {
             TypeDef::Struct(s) | TypeDef::Union(s) => Some(&s.members),
-            TypeDef::Typedef { underlying, .. } => {
-                self.get_members_with_depth(*underlying, depth + 1)
-            }
+            TypeDef::Typedef { underlying, .. } => self.members_with_depth(*underlying, depth + 1),
             TypeDef::Const(inner) | TypeDef::Volatile(inner) | TypeDef::Restrict(inner) => {
-                self.get_members_with_depth(*inner, depth + 1)
+                self.members_with_depth(*inner, depth + 1)
             }
             TypeDef::ForwardDecl {
                 target: Some(target),
                 ..
-            } => self.get_members_with_depth(*target, depth + 1),
+            } => self.members_with_depth(*target, depth + 1),
             _ => None,
         }
     }
 
     /// Get the underlying type for typedefs, const, volatile, etc.
-    pub fn get_underlying(&self, id: TypeId) -> TypeId {
-        self.get_underlying_with_depth(id, 0)
+    pub fn underlying(&self, id: TypeId) -> TypeId {
+        self.underlying_with_depth(id, 0)
     }
 
-    fn get_underlying_with_depth(&self, id: TypeId, depth: usize) -> TypeId {
+    fn underlying_with_depth(&self, id: TypeId, depth: usize) -> TypeId {
         if depth > 20 {
             return id;
         }
@@ -514,7 +511,7 @@ impl TypeTable {
             | Some(TypeDef::Const(underlying))
             | Some(TypeDef::Volatile(underlying))
             | Some(TypeDef::Restrict(underlying)) => {
-                self.get_underlying_with_depth(*underlying, depth + 1)
+                self.underlying_with_depth(*underlying, depth + 1)
             }
             _ => resolved_id,
         }
@@ -617,11 +614,6 @@ pub struct TypeTableStats {
 
 /// Shared type table wrapped in Arc for zero-cost cloning
 pub type SharedTypeTable = Arc<TypeTable>;
-
-/// Create a shared type table from a TypeTable
-pub fn share_type_table(table: TypeTable) -> SharedTypeTable {
-    Arc::new(table)
-}
 
 #[cfg(test)]
 mod tests {
@@ -762,7 +754,7 @@ mod tests {
         assert_eq!(table.type_name(struct_id), "Point");
         assert!(table.is_expandable(struct_id));
 
-        let members = table.get_members(struct_id).unwrap();
+        let members = table.members(struct_id).unwrap();
         assert_eq!(members.len(), 2);
         assert_eq!(members[0].name, "x");
         assert_eq!(members[1].name, "y");
@@ -804,7 +796,7 @@ mod tests {
         });
 
         assert_eq!(table.type_name(typedef_id), "int32_t");
-        assert_eq!(table.get_underlying(typedef_id), int_id);
+        assert_eq!(table.underlying(typedef_id), int_id);
         assert_eq!(table.type_size(typedef_id), Some(4));
     }
 
@@ -876,7 +868,7 @@ mod tests {
         });
 
         // Should resolve through the chain
-        let final_type = table.get_underlying(myint_id);
+        let final_type = table.underlying(myint_id);
         assert_eq!(final_type, int_id);
         assert_eq!(table.type_size(myint_id), Some(4));
     }
@@ -911,7 +903,7 @@ mod tests {
         assert_eq!(table.type_name(node_id), "Node");
         assert!(table.is_expandable(node_id));
 
-        let members = table.get_members(node_id).unwrap();
+        let members = table.members(node_id).unwrap();
         assert_eq!(members.len(), 2);
         assert_eq!(members[1].name, "next");
     }
@@ -993,7 +985,7 @@ mod tests {
         assert_eq!(table.type_size(union_id), Some(4));
         assert!(table.is_expandable(union_id));
 
-        let members = table.get_members(union_id).unwrap();
+        let members = table.members(union_id).unwrap();
         assert_eq!(members.len(), 2);
         // Both members should be at offset 0
         assert_eq!(members[0].offset, 0);
@@ -1097,7 +1089,7 @@ mod tests {
 
         assert_eq!(table.type_size(outer_id), Some(12));
 
-        let members = table.get_members(outer_id).unwrap();
+        let members = table.members(outer_id).unwrap();
         assert_eq!(members.len(), 2);
         assert_eq!(members[0].name, "inner");
         assert_eq!(members[0].type_id, inner_id);

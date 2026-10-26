@@ -2,6 +2,7 @@
 
 /// Status of a variable's address resolution
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum VariableStatus {
     /// Variable has a valid static address
     Valid { address: u64 },

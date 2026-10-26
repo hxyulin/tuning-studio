@@ -2,8 +2,8 @@
 
 use anyhow::{Result, anyhow, bail};
 use std::fmt::Write as _;
-use studio_dwarf::tree::{self, NodeKind};
-use studio_dwarf::{ElfInfo, Step, SymbolNode, VariableType};
+use studio_dwarf::tree::{self, NodeKind, Step, SymbolNode};
+use studio_dwarf::{ElfInfo, VariableType};
 
 use crate::memory::Memory;
 
@@ -480,7 +480,7 @@ mod lab_tests {
         let elf = ElfParser::parse(ELF).unwrap();
         let mut memory = Fake::from_elf(ELF);
         let mut names: Vec<_> = elf
-            .get_variables()
+            .variables()
             .into_iter()
             .map(|s| s.demangled_name.clone())
             .filter(|name| {

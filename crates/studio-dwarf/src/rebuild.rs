@@ -16,6 +16,7 @@ pub struct TrackedSymbol {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SymbolChange {
     AddressChanged {
         path: String,
@@ -57,7 +58,7 @@ pub fn diff_symbols(tracked: &[TrackedSymbol], elf: &ElfInfo) -> Vec<SymbolChang
                 path: t.path.clone(),
                 old_type: t.var_type,
                 new_type,
-                new_type_name: elf.get_symbol_type_name(sym),
+                new_type_name: elf.symbol_type_name(sym),
             });
         }
     }

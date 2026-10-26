@@ -2,7 +2,8 @@
 //! `data_ptr.*`, `app::MODE#Some.__0`.
 
 use anyhow::{Result, anyhow, bail};
-use studio_dwarf::{ElfInfo, NodeRef, Step, SymbolNode, TypeId, VariableType, tree};
+use studio_dwarf::tree::{self, NodeRef, Step, SymbolNode};
+use studio_dwarf::{ElfInfo, TypeId, VariableType};
 
 use crate::memory::Memory;
 
@@ -231,7 +232,7 @@ fn find_symbol(elf: &ElfInfo, name: &str) -> Result<Option<String>> {
     }
     let suffix = format!("::{name}");
     let mut matches: Vec<&str> = elf
-        .get_variables()
+        .variables()
         .into_iter()
         .map(|s| s.demangled_name.as_str())
         .filter(|full| full.ends_with(&suffix))

@@ -23,7 +23,8 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
-use studio_dwarf::{ElfInfo, SymbolNode, VariableType};
+use studio_dwarf::tree::SymbolNode;
+use studio_dwarf::{ElfInfo, VariableType};
 
 use crate::api;
 use crate::memory::Memory;

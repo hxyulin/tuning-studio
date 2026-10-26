@@ -21,7 +21,8 @@ mod variables;
 pub use status::{DwarfDiagnostics, VariableStatus};
 use variables::{DeferredVariable, PendingSymbol, VariableInfo};
 
-use super::type_table::{DwarfTypeKey, GlobalTypeKey, TypeDef, TypeId, TypeTable};
+use super::type_table::TypeTable;
+use super::types::{DwarfTypeKey, GlobalTypeKey, TypeDef, TypeId};
 use gimli::{
     AttributeValue, DebuggingInformationEntry, Dwarf, EndianSlice, ReaderOffset, RunTimeEndian,
     Unit,
@@ -31,7 +32,7 @@ use std::borrow::Cow;
 
 /// A parsed symbol with type information
 #[derive(Debug, Clone)]
-pub struct ParsedSymbol {
+pub(crate) struct ParsedSymbol {
     pub name: String,
     pub mangled_name: Option<String>,
     pub address: u64,
@@ -44,7 +45,7 @@ pub struct ParsedSymbol {
 
 /// Result of parsing DWARF info
 #[derive(Debug)]
-pub struct DwarfParseResult {
+pub(crate) struct DwarfParseResult {
     pub type_table: TypeTable,
     pub symbols: Vec<ParsedSymbol>,
     /// Mapping from variable name (including mangled names) to TypeId
@@ -55,7 +56,7 @@ pub struct DwarfParseResult {
 }
 
 /// DWARF parser that populates a TypeTable
-pub struct DwarfParser<'a, R: gimli::Reader> {
+pub(crate) struct DwarfParser<'a, R: gimli::Reader> {
     dwarf: &'a Dwarf<R>,
     type_table: TypeTable,
     /// Parsed variables pending final resolution
@@ -67,8 +68,6 @@ pub struct DwarfParser<'a, R: gimli::Reader> {
     /// Whether the compile unit being walked is Rust (`DW_LANG_Rust`)
     unit_is_rust: bool,
 }
-
-/// Cached information about a variable (for abstract_origin/specification resolution)
 
 type Reader<'a> = EndianSlice<'a, RunTimeEndian>;
 
@@ -472,7 +471,7 @@ mod tests {
 
         // Check that structs have members
         if let Some(var) = sensor_struct {
-            let members = result.type_table.get_members(var.type_id);
+            let members = result.type_table.members(var.type_id);
             assert!(members.is_some(), "Struct should have members");
             if let Some(members) = members {
                 assert!(
@@ -491,7 +490,7 @@ mod tests {
         let device_config = result.symbols.iter().find(|s| s.name == "device_config");
 
         if let Some(var) = device_config {
-            let members = result.type_table.get_members(var.type_id);
+            let members = result.type_table.members(var.type_id);
             assert!(members.is_some(), "DeviceConfig should have members");
             if let Some(members) = members {
                 // Should have id, sensor (nested struct), enabled

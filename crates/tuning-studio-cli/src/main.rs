@@ -21,8 +21,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
-use studio_dwarf::tree::{self, NodeKind};
-use studio_dwarf::{ElfInfo, ElfParser, Step};
+use studio_dwarf::tree::{self, NodeKind, Step};
+use studio_dwarf::{ElfInfo, ElfParser};
 
 use action::{
     Action, BreakArgs, DeleteArgs, FlashArgs, ReadArgs, ResetArgs, SetArgs, TasksArgs, TraceArgs,

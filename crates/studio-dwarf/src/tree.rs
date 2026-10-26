@@ -17,9 +17,8 @@
 use crate::dwarf_parser::DwarfDiagnostics;
 use crate::elf::{ElfInfo, SymbolInfo};
 use crate::tasks;
-use crate::type_table::{
-    MemberDef, SourceLocation, StructDef, TypeDef, TypeId, TypeTable, VariantDef,
-};
+use crate::type_table::TypeTable;
+use crate::types::{MemberDef, SourceLocation, StructDef, TypeDef, TypeId, VariantDef};
 use crate::variable_type::VariableType;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -30,6 +29,7 @@ pub const DEFAULT_CHILD_LIMIT: usize = 256;
 /// One step from a node to a child.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "camelCase")]
+#[non_exhaustive]
 pub enum Step {
     Member(String),
     Index(u64),
@@ -107,6 +107,7 @@ impl fmt::Display for NodeRef {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub enum NodeKind {
     /// Integer, float or bool
     Scalar,
@@ -239,7 +240,7 @@ pub fn summary(elf: &ElfInfo) -> ElfSummary {
         variables: elf.variable_count(),
         functions: elf.function_count(),
         types: elf.type_table().len(),
-        diagnostics: elf.get_diagnostics().into(),
+        diagnostics: elf.diagnostics().into(),
     }
 }
 
@@ -247,7 +248,7 @@ pub fn summary(elf: &ElfInfo) -> ElfSummary {
 pub fn roots(elf: &ElfInfo) -> Vec<RootNode> {
     let table = elf.type_table();
     let mut roots: Vec<RootNode> = elf
-        .get_variables()
+        .variables()
         .into_iter()
         .filter_map(|sym| {
             let type_id = sym.type_id?;
@@ -415,7 +416,7 @@ pub fn children_page(
         n
     };
 
-    let nodes: Vec<SymbolNode> = match table.get(table.get_underlying(peel(table, at.type_id))) {
+    let nodes: Vec<SymbolNode> = match table.get(table.underlying(peel(table, at.type_id))) {
         Some(TypeDef::Struct(s)) | Some(TypeDef::Union(s)) => match &s.variant_part {
             Some(part) => part
                 .discriminant
@@ -591,8 +592,7 @@ fn resolve_with_memory<'e>(
         }
         if live
             && let Step::Variant(name) = step
-            && let Some(TypeDef::Struct(s)) =
-                table.get(table.get_underlying(peel(table, at.type_id)))
+            && let Some(TypeDef::Struct(s)) = table.get(table.underlying(peel(table, at.type_id)))
             && let Some(part) = &s.variant_part
         {
             let tag = if let Some(d) = &part.discriminant {
@@ -617,7 +617,7 @@ fn resolve_with_memory<'e>(
                 return Err(bad("not readable".into()));
             }
             let Some(TypeDef::Pointer(inner) | TypeDef::Reference(inner)) =
-                table.get(table.get_underlying(peel(table, at.type_id)))
+                table.get(table.underlying(peel(table, at.type_id)))
             else {
                 return Err(bad("not a pointer".into()));
             };
@@ -703,7 +703,7 @@ fn variant_label(table: &TypeTable, v: &VariantDef) -> String {
         return name.clone();
     }
     match table
-        .get(table.get_underlying(v.member.type_id))
+        .get(table.underlying(v.member.type_id))
         .and_then(TypeDef::name)
     {
         Some(payload) => split_path(payload).pop().unwrap_or_else(|| name.clone()),
@@ -718,7 +718,7 @@ fn enter(
     address: u64,
     step: &Step,
 ) -> Result<Resolved, String> {
-    let def = table.get(table.get_underlying(type_id));
+    let def = table.get(table.underlying(type_id));
     let (member, discr_value) = match (step, def) {
         (Step::Member(name), Some(TypeDef::Struct(s) | TypeDef::Union(s))) => (
             s.members
@@ -794,8 +794,7 @@ fn unique_members(s: &StructDef) -> impl Iterator<Item = &MemberDef> {
 /// filling the whole wrapper. `Atomic<u32>.v`, `Mutex.data` (beside a
 /// zero-sized `raw`), `MaybeUninit.value`. Tagged enums are not wrappers.
 fn held_member(table: &TypeTable, type_id: TypeId) -> Option<&MemberDef> {
-    let (Some(TypeDef::Struct(s)) | Some(TypeDef::Union(s))) =
-        table.get(table.get_underlying(type_id))
+    let (Some(TypeDef::Struct(s)) | Some(TypeDef::Union(s))) = table.get(table.underlying(type_id))
     else {
         return None;
     };
@@ -872,7 +871,7 @@ pub(crate) fn describe(
     outer: TypeId,
 ) -> SymbolNode {
     let type_id = peel(table, outer);
-    let underlying = table.get(table.get_underlying(type_id));
+    let underlying = table.get(table.underlying(type_id));
     let (kind, child_count) = match underlying {
         Some(TypeDef::Primitive(_)) => (NodeKind::Scalar, None),
         Some(TypeDef::Enum(_)) => (NodeKind::Enum, None),
@@ -893,7 +892,7 @@ pub(crate) fn describe(
         _ => (NodeKind::Other, None),
     };
     let scalar = matches!(kind, NodeKind::Scalar | NodeKind::Enum | NodeKind::Pointer)
-        .then(|| table.to_variable_type(table.get_underlying(type_id)));
+        .then(|| table.to_variable_type(table.underlying(type_id)));
     SymbolNode {
         path: node.to_string(),
         node,
@@ -943,7 +942,7 @@ pub fn split_path(path: &str) -> Vec<String> {
 
 /// Recognize only genuine Rust borrowed str/slice DWARF layouts, not arbitrary structs.
 fn sequence(table: &TypeTable, outer: TypeId) -> Option<(&MemberDef, &MemberDef, TypeId, bool)> {
-    let Some(TypeDef::Struct(s)) = table.get(table.get_underlying(peel(table, outer))) else {
+    let Some(TypeDef::Struct(s)) = table.get(table.underlying(peel(table, outer))) else {
         return None;
     };
     let name = s.name.as_deref()?;
@@ -953,7 +952,7 @@ fn sequence(table: &TypeTable, outer: TypeId) -> Option<(&MemberDef, &MemberDef,
     }
     let data = s.members.iter().find(|m| m.name == "data_ptr")?;
     let length = s.members.iter().find(|m| m.name == "length")?;
-    let Some(TypeDef::Pointer(element)) = table.get(table.get_underlying(data.type_id)) else {
+    let Some(TypeDef::Pointer(element)) = table.get(table.underlying(data.type_id)) else {
         return None;
     };
     Some((data, length, *element, is_str))
@@ -968,17 +967,15 @@ pub fn enum_variants(
 ) -> Result<Option<Vec<(String, i64)>>, TreeError> {
     let (_, at) = resolve_with_memory(elf, node, read_pointer, true)?;
     let table = elf.type_table();
-    Ok(
-        match table.get(table.get_underlying(peel(table, at.type_id))) {
-            Some(TypeDef::Enum(e)) => Some(
-                e.variants
-                    .iter()
-                    .map(|v| (v.name.clone(), v.value))
-                    .collect(),
-            ),
-            _ => None,
-        },
-    )
+    Ok(match table.get(table.underlying(peel(table, at.type_id))) {
+        Some(TypeDef::Enum(e)) => Some(
+            e.variants
+                .iter()
+                .map(|v| (v.name.clone(), v.value))
+                .collect(),
+        ),
+        _ => None,
+    })
 }
 
 pub struct Preview {
@@ -1040,7 +1037,7 @@ pub fn preview(
             format!("[{count} elements]")
         }
     } else {
-        match table.get(table.get_underlying(peel(table, at.type_id))) {
+        match table.get(table.underlying(peel(table, at.type_id))) {
             Some(TypeDef::Enum(e)) => {
                 let value = word(read(at.address, e.size as usize)?)?;
                 // Enumerators are signed i64 in DWARF; match both raw bits and sign extension.
@@ -1070,7 +1067,7 @@ pub fn preview(
                 active_variant = Some(variant.member.name.clone());
                 variant_label(table, variant)
             }
-            Some(TypeDef::Primitive(crate::type_table::PrimitiveDef::UnicodeChar { size })) => {
+            Some(TypeDef::Primitive(crate::types::PrimitiveDef::UnicodeChar { size })) => {
                 let value = word(read(at.address, *size as usize)?)?;
                 char::from_u32(u32::try_from(value).map_err(|_| "invalid character")?)
                     .map(|c| format!("{c:?} (U+{value:04X})"))

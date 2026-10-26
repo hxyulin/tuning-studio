@@ -6,8 +6,8 @@ use anyhow::{Result, anyhow, bail};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use studio_dwarf::tree::{self, NodeKind};
-use studio_dwarf::{ElfInfo, NodeRef, Step, SymbolNode, VariableType};
+use studio_dwarf::tree::{self, NodeKind, NodeRef, Step, SymbolNode};
+use studio_dwarf::{ElfInfo, VariableType};
 
 use crate::memory::{self, Memory};
 use crate::path;
@@ -326,7 +326,7 @@ pub fn request(
 /// Every `Param`, then every `Watch`, in the ELF.
 pub fn values(elf: &ElfInfo, memory: &mut dyn Memory) -> Result<String> {
     let mut found: Vec<(Kind, SymbolNode)> = Vec::new();
-    for symbol in elf.get_variables() {
+    for symbol in elf.variables() {
         let Ok(node) = path::describe(elf, memory, &NodeRef::root(symbol.demangled_name.clone()))
         else {
             continue;
