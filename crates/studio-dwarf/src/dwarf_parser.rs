@@ -2047,16 +2047,16 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
 }
 
 /// Array element count from a `DW_AT_upper_bound` value. Compilers encode
-/// zero-length and unbounded arrays with an all-ones bound, which has no count.
+/// zero-length and unbounded arrays with a bound of -1, which has no count. In
+/// a 4- or 8-byte form that reads as all ones; in a 1- or 2-byte form all ones
+/// is a real bound, such as 255 for `char buf[256]`.
 fn upper_bound_count(attr: AttributeValue<Reader<'_>>) -> Option<u64> {
     let bound = match attr {
+        AttributeValue::Data4(u32::MAX) => return None,
         AttributeValue::Udata(v) | AttributeValue::Data8(v) => v,
-        AttributeValue::Data1(v) if v == u8::MAX => return None,
-        AttributeValue::Data2(v) if v == u16::MAX => return None,
-        AttributeValue::Data4(v) if v == u32::MAX => return None,
-        AttributeValue::Data1(v) => v as u64,
-        AttributeValue::Data2(v) => v as u64,
-        AttributeValue::Data4(v) => v as u64,
+        AttributeValue::Data1(v) => u64::from(v),
+        AttributeValue::Data2(v) => u64::from(v),
+        AttributeValue::Data4(v) => u64::from(v),
         AttributeValue::Sdata(v) => u64::try_from(v).ok()?,
         _ => return None,
     };
@@ -2068,13 +2068,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn upper_bound_all_ones_has_no_count() {
-        let count = |v| upper_bound_count(v);
+    fn upper_bound_of_minus_one_has_no_count() {
+        let count = upper_bound_count;
         assert_eq!(count(AttributeValue::Data8(u64::MAX)), None);
         assert_eq!(count(AttributeValue::Udata(u64::MAX)), None);
         assert_eq!(count(AttributeValue::Data4(u32::MAX)), None);
-        assert_eq!(count(AttributeValue::Data2(u16::MAX)), None);
-        assert_eq!(count(AttributeValue::Data1(u8::MAX)), None);
+        // A 1- or 2-byte bound of all ones is a real 256- or 65,536-element array.
+        assert_eq!(count(AttributeValue::Data2(u16::MAX)), Some(65_536));
+        assert_eq!(count(AttributeValue::Data1(u8::MAX)), Some(256));
         assert_eq!(count(AttributeValue::Sdata(-1)), None);
         assert_eq!(count(AttributeValue::Sdata(-7)), None);
     }
