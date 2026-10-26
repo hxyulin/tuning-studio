@@ -13,7 +13,9 @@ pub mod task_stats;
 pub mod task_trace;
 pub mod tasks;
 pub mod tree;
+pub mod type_handle;
 pub mod type_table;
+pub mod types;
 pub mod variable_type;
 
 pub use dwarf_parser::{
@@ -23,5 +25,7 @@ pub use elf::{ElfInfo, ElfParser, SymbolInfo, SymbolType, demangle_symbol};
 pub use error::{Error, Result};
 pub use rebuild::{SymbolChange, TrackedSymbol, diff_symbols};
 pub use tree::{NodeRef, Step, SymbolNode};
-pub use type_table::{SharedTypeTable, TypeDef, TypeHandle, TypeId, TypeTable};
+pub use type_handle::TypeHandle;
+pub use type_table::{SharedTypeTable, TypeTable};
+pub use types::{TypeDef, TypeId};
 pub use variable_type::VariableType;
