@@ -193,16 +193,25 @@ fn find_function<'e>(elf: &'e ElfInfo, name: &str) -> Result<&'e SymbolInfo> {
 
 fn parse_address(text: &str) -> Option<u64> {
     let text = text.replace('_', "");
-    match text.strip_prefix("0x") {
-        Some(hex) => u64::from_str_radix(hex, 16).ok(),
-        None => text.parse().ok(),
-    }
+    // The target is 32-bit, so a wider address is not an address.
+    let address = match text.strip_prefix("0x") {
+        Some(hex) => u32::from_str_radix(hex, 16).ok(),
+        None => text.parse::<u32>().ok(),
+    };
+    address.map(u64::from)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use studio_dwarf::ElfParser;
+
+    #[test]
+    fn breakpoint_addresses_are_32_bit() {
+        assert_eq!(parse_address("0xFFFF_FFFF"), Some(0xFFFF_FFFF));
+        assert_eq!(parse_address("0x1_0000_0000"), None);
+        assert_eq!(parse_address("4294967296"), None);
+    }
 
     #[test]
     fn finds_lab_functions() {

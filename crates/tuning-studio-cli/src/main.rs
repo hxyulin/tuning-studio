@@ -86,7 +86,7 @@ enum Command {
         #[arg(long, default_value_t = 100)]
         interval: u64,
         /// Stop after this many reads
-        #[arg(long)]
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
         count: Option<u64>,
     },
     /// Sample every Embassy task while the firmware runs, then print how often
@@ -364,6 +364,11 @@ fn main() -> Result<()> {
                 args.extend(["--duration".into(), duration.to_string()]);
                 return daemon::request(session, args);
             }
+            // Ctrl-C ends collection early; the ETF is still stopped and reported.
+            let stop = Arc::new(AtomicBool::new(false));
+            let handler = Arc::clone(&stop);
+            ctrlc::set_handler(move || handler.store(true, Ordering::Relaxed))?;
+            session::block_sigint();
             let (probe, elf) = target.attach()?;
             let mut session = probe.session.lock();
             print!(
@@ -373,7 +378,8 @@ fn main() -> Result<()> {
                     &mut session,
                     elf.as_ref(),
                     &locations,
-                    Duration::from_millis(duration)
+                    Duration::from_millis(duration),
+                    &stop
                 )?
             );
         }
@@ -742,6 +748,12 @@ fn set(
 mod tests {
     use super::*;
     use memory::Fake;
+
+    #[test]
+    fn watch_count_must_be_positive() {
+        assert!(Cli::try_parse_from(["tuning", "watch", "0x2000_0000", "--count", "0"]).is_err());
+        assert!(Cli::try_parse_from(["tuning", "watch", "0x2000_0000", "--count", "2"]).is_ok());
+    }
 
     #[test]
     fn sets_scalars_only() {

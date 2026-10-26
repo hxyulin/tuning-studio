@@ -75,7 +75,7 @@ enum SessionCommand {
         #[arg(long, default_value_t = 100)]
         interval: u64,
         /// Stop after this many reads
-        #[arg(long)]
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
         count: Option<u64>,
     },
     /// Stop the watches with these numbers, or all of them
@@ -567,6 +567,8 @@ fn handle(
                 elf,
                 &locations,
                 Duration::from_millis(duration),
+                // The session's Ctrl-C ends the session, not a trace.
+                &std::sync::atomic::AtomicBool::new(false),
             )?;
         }
         SessionCommand::Values => {
@@ -701,7 +703,7 @@ fn run_watches(target: &Target, state: &mut State) {
         while watch.next <= now {
             watch.next += watch.interval;
         }
-        watch.remaining = watch.remaining.map(|n| n - 1);
+        watch.remaining = watch.remaining.map(|n| n.saturating_sub(1));
         if watch.remaining == Some(0) {
             sent.push((
                 watch.sink,
@@ -797,5 +799,20 @@ pub fn block_sigint() {
         libc::sigemptyset(&mut set);
         libc::sigaddset(&mut set, libc::SIGINT);
         libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn watch_count_must_be_positive() {
+        assert!(Line::try_parse_from(["watch", "0x2000_0000", "--count", "0"]).is_err());
+        let line = Line::try_parse_from(["watch", "0x2000_0000", "--count", "2"]).unwrap();
+        assert!(matches!(
+            line.command,
+            SessionCommand::Watch { count: Some(2), .. }
+        ));
     }
 }

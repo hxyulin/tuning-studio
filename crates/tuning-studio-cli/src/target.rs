@@ -173,7 +173,9 @@ impl Memory for ApMemory<'_> {
     }
 
     fn write(&mut self, address: u64, data: &[u8]) -> Result<()> {
-        let end = address + data.len() as u64;
+        let end = address
+            .checked_add(data.len() as u64)
+            .context("the write runs past the end of the address space")?;
         if self.nvm.iter().any(|r| address < r.end && r.start < end) {
             bail!("{address:#010x} is in flash, which ignores writes");
         }

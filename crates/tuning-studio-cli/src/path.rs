@@ -76,9 +76,10 @@ fn split_address(text: &str) -> Result<Option<(u64, &str)>> {
     if end == 0 || (radix == 10 && digits[end..].starts_with(|c: char| c.is_alphabetic())) {
         return Ok(None);
     }
-    let address = u64::from_str_radix(&digits[..end].replace('_', ""), radix)
-        .map_err(|e| anyhow!("bad address in `{text}`: {e}"))?;
-    Ok(Some((address, &digits[end..])))
+    // The target is 32-bit, so a wider address names nothing.
+    let address = u32::from_str_radix(&digits[..end].replace('_', ""), radix)
+        .map_err(|e| anyhow!("bad 32-bit address in `{text}`: {e}"))?;
+    Ok(Some((u64::from(address), &digits[end..])))
 }
 
 /// Split `Axis.gains` into the type and the path after it. A type may contain `.`,
@@ -283,6 +284,14 @@ mod tests {
             Location::Node(node) => node.path,
             Location::Raw { address, scalar } => format!("{address:#x}:{scalar}"),
         }
+    }
+
+    #[test]
+    fn addresses_are_32_bit() {
+        let (address, rest) = split_address("0xFFFF_FFFF:u32").unwrap().unwrap();
+        assert_eq!((address, rest), (0xFFFF_FFFF, ":u32"));
+        assert!(split_address("0x1_0000_0000:u32").is_err());
+        assert!(split_address("4294967296").is_err());
     }
 
     #[test]

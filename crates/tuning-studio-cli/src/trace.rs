@@ -21,6 +21,7 @@ use probe_rs::architecture::arm::memory::{CoresightComponent, PeripheralType};
 use probe_rs::{MemoryInterface, Session};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use studio_dwarf::{ElfInfo, SymbolNode, VariableType};
 
@@ -129,6 +130,7 @@ pub fn run(
     elf: Option<&ElfInfo>,
     locations: &[String],
     duration: Duration,
+    stop: &AtomicBool,
 ) -> Result<String> {
     let values = {
         let mut memory = target.memory(session)?;
@@ -140,7 +142,7 @@ pub fn run(
             })
             .collect::<Result<Vec<_>>>()?
     };
-    trace(session, elf, &values, duration)
+    trace(session, elf, &values, duration, stop)
 }
 
 /// Trace every write to `values` for `duration`, then print each with its time,
@@ -150,9 +152,10 @@ pub fn trace(
     elf: Option<&ElfInfo>,
     values: &[Traced],
     duration: Duration,
+    stop: &AtomicBool,
 ) -> Result<String> {
     let mut etf = Etf::start(session, values)?;
-    let result = etf.collect(session, duration);
+    let result = etf.collect(session, duration, stop);
     let stopped = etf.stop(session);
     let capture = result?;
     stopped?;
@@ -201,51 +204,102 @@ impl Etf {
             core.write_word_32(DEMCR, demcr | TRCENA)?;
             demcr
         };
+        let mut started = Self {
+            ap: etf.ap_address.clone(),
+            base: etf.component.id().component_address(),
+            demcr,
+            dwt: dwt.clone(),
+            // Counted up as comparators are set, so an undo touches only those.
+            units: 0,
+        };
+        // From here the hardware is changed, so a failure undoes it. The setup's
+        // error is the one worth reporting, not the undo's.
+        if let Err(e) = started.configure(session, values, (dwt, itm, funnel, etf)) {
+            let _ = started.stop(session);
+            return Err(e);
+        }
+        Ok(started)
+    }
+
+    /// Enable the trace units and the comparators, after TRCENA is set.
+    fn configure(
+        &mut self,
+        session: &mut Session,
+        values: &[Traced],
+        (dwt, itm, funnel, etf): (
+            &CoresightComponent,
+            &CoresightComponent,
+            &CoresightComponent,
+            &CoresightComponent,
+        ),
+    ) -> Result<()> {
         let comparators = dwt.read_reg(session.get_arm_interface()?, 0)? >> 28;
         if values.len() > comparators as usize {
-            session.core(0)?.write_word_32(DEMCR, demcr)?;
             bail!(
                 "the DWT has {comparators} comparators, so it traces at most {comparators} values"
             );
         }
         let interface = session.get_arm_interface()?;
         // The cycle counter, which the timestamps count, and sync packets
-        Dwt::new(interface, dwt).enable()?;
+        Dwt::new(interface, dwt)
+            .enable()
+            .context("could not enable the DWT")?;
         // Only the data trace: exception trace and global timestamps would fill
         // the ETF faster than the probe drains it.
-        Dwt::new(interface, dwt).disable_exception_trace()?;
+        Dwt::new(interface, dwt)
+            .disable_exception_trace()
+            .context("could not disable the DWT's exception trace")?;
         let mut itm_unit = Itm::new(interface, itm);
-        itm_unit.unlock()?;
-        itm_unit.tx_enable()?;
-        let tcr = itm.read_reg(interface, ITM_TCR)?;
-        itm.write_reg(interface, ITM_TCR, tcr & !GTSFREQ)?;
+        itm_unit.unlock().context("could not unlock the ITM")?;
+        itm_unit.tx_enable().context("could not enable the ITM")?;
+        let tcr = itm
+            .read_reg(interface, ITM_TCR)
+            .context("could not read the ITM's control register")?;
+        itm.write_reg(interface, ITM_TCR, tcr & !GTSFREQ)
+            .context("could not write the ITM's control register")?;
         let mut funnel = TraceFunnel::new(interface, funnel);
-        funnel.unlock()?;
-        funnel.enable_port(FUNNEL_ITM_PORT)?;
+        funnel
+            .unlock()
+            .context("could not unlock the trace funnel")?;
+        funnel
+            .enable_port(FUNNEL_ITM_PORT)
+            .context("could not open the trace funnel's ITM port")?;
         // Restart the ETF empty, as a FIFO the probe reads.
-        etf.write_reg(interface, ETF_CTL, 0)?;
+        etf.write_reg(interface, ETF_CTL, 0)
+            .context("could not disable the ETF")?;
         let start = Instant::now();
-        while etf.read_reg(interface, ETF_STS)? & STS_READY == 0 {
+        while etf
+            .read_reg(interface, ETF_STS)
+            .context("could not read the ETF's status")?
+            & STS_READY
+            == 0
+        {
             if start.elapsed() > Duration::from_millis(100) {
                 bail!("the ETF did not stop");
             }
         }
-        etf.write_reg(interface, ETF_MODE, MODE_SOFTWARE_FIFO)?;
-        etf.write_reg(interface, ETF_CTL, 1)?;
+        etf.write_reg(interface, ETF_MODE, MODE_SOFTWARE_FIFO)
+            .context("could not set the ETF to FIFO mode")?;
+        etf.write_reg(interface, ETF_CTL, 1)
+            .context("could not enable the ETF")?;
         for (unit, traced) in values.iter().enumerate() {
-            Dwt::new(interface, dwt).enable_data_trace(unit, traced.address as u32)?;
+            let address = u32::try_from(traced.address)
+                .with_context(|| format!("{} is not a 32-bit address", traced.label))?;
+            self.units = unit + 1;
+            Dwt::new(interface, dwt)
+                .enable_data_trace(unit, address)
+                .with_context(|| format!("could not set up DWT comparator {unit}"))?;
         }
-        Ok(Self {
-            ap: etf.ap_address.clone(),
-            base: etf.component.id().component_address(),
-            demcr,
-            dwt: dwt.clone(),
-            units: values.len(),
-        })
+        Ok(())
     }
 
-    /// Drain the ETF until `duration` passes.
-    fn collect(&mut self, session: &mut Session, duration: Duration) -> Result<Capture> {
+    /// Drain the ETF until `duration` passes or `stop` is set.
+    fn collect(
+        &mut self,
+        session: &mut Session,
+        duration: Duration,
+        stop: &AtomicBool,
+    ) -> Result<Capture> {
         let mut frames = Frames::default();
         let mut decoder = Decoder::default();
         let mut packets = Vec::new();
@@ -261,7 +315,7 @@ impl Etf {
             last = now;
             Ok(())
         };
-        while start.elapsed() < duration {
+        while start.elapsed() < duration && !stop.load(Ordering::Relaxed) {
             decoder.feed(&frames.feed(&self.drain(session)?), &mut packets);
             if counted.elapsed() > CYCCNT_INTERVAL {
                 count(session)?;
