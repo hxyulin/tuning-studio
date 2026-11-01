@@ -1,6 +1,6 @@
-//! Values the firmware declares with `tuning-studio-api`: `Watch` statics, which
-//! the host only reads, and `Param`s, which it changes through the firmware.
-//! Both are found by type name and read by field name.
+//! Values declared with `tuning-studio-api`: read-only `Watch` snapshots, editable
+//! `WatchMut` snapshots, and `Param`s. All are found by type name and read by
+//! field name. Edits go through the firmware's request/reply mailbox.
 
 use anyhow::{Result, anyhow, bail};
 use std::collections::HashMap;
@@ -23,10 +23,11 @@ const APPLIED: u64 = 1;
 const CLAMPED: u64 = 2;
 const REFUSED: u64 = 3;
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Kind {
-    Watch,
     Param,
+    WatchMut,
+    Watch,
 }
 
 pub fn kind(node: &SymbolNode) -> Option<Kind> {
@@ -37,6 +38,8 @@ pub fn kind(node: &SymbolNode) -> Option<Kind> {
         Some(Kind::Watch)
     } else if node.type_name.starts_with("Param<") {
         Some(Kind::Param)
+    } else if node.type_name.starts_with("WatchMut<") {
+        Some(Kind::WatchMut)
     } else {
         None
     }
@@ -67,7 +70,14 @@ fn field(
     node: &SymbolNode,
     name: &str,
 ) -> Result<SymbolNode> {
-    path::describe(elf, memory, &node.node.child(Step::Member(name.into()))).map_err(|e| {
+    let parent = if kind(node) == Some(Kind::WatchMut)
+        && matches!(name, "end" | "start" | "value" | "unit")
+    {
+        node.node.child(Step::Member("snapshot".into()))
+    } else {
+        node.node.clone()
+    };
+    path::describe(elf, memory, &parent.child(Step::Member(name.into()))).map_err(|e| {
         anyhow!(
             "{} has no field `{name}` ({e}); is it from tuning-studio-api 0.2?",
             node.path
@@ -202,22 +212,20 @@ pub fn traced_value(
     Ok((value, unit(elf, memory, node)))
 }
 
-/// The fields of a `Param` the host shows
-struct Param {
+/// Request/reply fields shared by parameters and mutable watches.
+struct Mailbox {
     value: SymbolNode,
-    target: SymbolNode,
     request: SymbolNode,
     request_id: SymbolNode,
     reply_id: SymbolNode,
     reply: SymbolNode,
 }
 
-impl Param {
+impl Mailbox {
     fn new(elf: &ElfInfo, memory: &mut dyn Memory, node: &SymbolNode) -> Result<Self> {
         let mut get = |name| field(elf, memory, node, name);
         Ok(Self {
             value: get("value")?,
-            target: get("target")?,
             request: get("request")?,
             request_id: get("request_id")?,
             reply_id: get("reply_id")?,
@@ -233,10 +241,10 @@ impl Param {
 /// ```
 pub fn render_param(elf: &ElfInfo, memory: &mut dyn Memory, node: &SymbolNode) -> Result<String> {
     memory.snapshot(node.address, param_size(node)?)?;
-    let param = Param::new(elf, memory, node)?;
+    let param = Mailbox::new(elf, memory, node)?;
     let scalar = scalar(&param.value)?;
     let value = text(memory, &param.value)?;
-    let target = text(memory, &param.target)?;
+    let target = field_text(elf, memory, node, "target")?;
     let mut notes = Vec::new();
     if target != value {
         notes.push(format!("target {target}"));
@@ -283,7 +291,7 @@ fn extremes(scalar: VariableType) -> (String, String) {
     }
 }
 
-/// Ask the firmware to change a `Param`, and wait for its answer. Returns a note
+/// Ask the firmware to change a parameter or mutable watch, and wait for its answer. Returns a note
 /// when the firmware changed the request.
 pub fn request(
     elf: &ElfInfo,
@@ -291,7 +299,7 @@ pub fn request(
     node: &SymbolNode,
     text: &str,
 ) -> Result<String> {
-    let param = Param::new(elf, memory, node)?;
+    let param = Mailbox::new(elf, memory, node)?;
     let scalar = scalar(&param.value)?;
     let mut bytes = value::encode(scalar, text)?;
     bytes.resize(4, 0);
@@ -300,11 +308,16 @@ pub fn request(
     memory.write(param.request.address, &bytes)?;
     memory.write(param.request_id.address, &id.to_le_bytes())?;
     let start = Instant::now();
+    let applies_in = if kind(node) == Some(Kind::WatchMut) {
+        "`watch_mut!` / `WatchMut::sync`"
+    } else {
+        "`Param::get`"
+    };
     while memory.word(param.reply_id.address, 4)? != u64::from(id) {
         if start.elapsed() > REPLY_TIMEOUT {
             bail!(
                 "the firmware did not answer within {} ms. It applies requests in \
-                 `Param::get`; is the core halted, or is `{}` never read? The request \
+                 {applies_in}; is the core halted, or is `{}` never synchronized? The request \
                  stays waiting.",
                 REPLY_TIMEOUT.as_millis(),
                 node.path
@@ -316,7 +329,7 @@ pub fn request(
         APPLIED => Ok(String::new()),
         CLAMPED => Ok(format!(
             "{text} is outside the range; the firmware clamped it to {}\n",
-            self::text(memory, &param.target)?
+            field_text(elf, memory, node, "target")?
         )),
         REFUSED => bail!("the firmware refused {text} for {}", node.path),
         other => bail!("the firmware answered with an unknown reply {other}"),
@@ -335,9 +348,9 @@ pub fn values(elf: &ElfInfo, memory: &mut dyn Memory) -> Result<String> {
             found.push((kind, node));
         }
     }
-    found.sort_by(|a, b| (a.0 == Kind::Watch, &a.1.path).cmp(&(b.0 == Kind::Watch, &b.1.path)));
+    found.sort_by(|a, b| (a.0, &a.1.path).cmp(&(b.0, &b.1.path)));
     if found.is_empty() {
-        bail!("the ELF declares no `Param` or `Watch` from tuning-studio-api");
+        bail!("the ELF declares no `Param`, `WatchMut`, or `Watch` from tuning-studio-api");
     }
     let spans = found
         .iter()
@@ -348,7 +361,7 @@ pub fn values(elf: &ElfInfo, memory: &mut dyn Memory) -> Result<String> {
     for (kind, node) in &found {
         out += &match kind {
             Kind::Param => render_param(elf, memory, node)?,
-            Kind::Watch => render_watch(elf, memory, node)?,
+            Kind::Watch | Kind::WatchMut => render_watch(elf, memory, node)?,
         };
     }
     memory.forget();
@@ -364,7 +377,7 @@ pub fn span(
     node: &SymbolNode,
 ) -> Result<(u64, usize)> {
     match kind {
-        Kind::Watch => watch_span(elf, memory, node),
+        Kind::Watch | Kind::WatchMut => watch_span(elf, memory, node),
         Kind::Param => Ok((node.address, param_size(node)?)),
     }
 }
@@ -496,6 +509,89 @@ mod tests {
     }
 
     #[test]
+    fn mutable_watches_render_snapshots_and_use_the_request_mailbox() {
+        use crate::memory::Snapshots;
+        use std::ops::Range;
+
+        // Simulate firmware consuming the request after its ID has been written.
+        struct Firmware {
+            memory: Fake,
+            mailbox: Mailbox,
+            end: u64,
+            start: u64,
+            response: u8,
+        }
+        impl Memory for Firmware {
+            fn transfer(&mut self, address: u64, len: usize) -> Result<Vec<u8>> {
+                self.memory.transfer(address, len)
+            }
+            fn write(&mut self, address: u64, data: &[u8]) -> Result<()> {
+                self.memory.write(address, data)?;
+                if address == self.mailbox.request_id.address {
+                    if self.response == APPLIED as u8 {
+                        let bytes = self.memory.read(self.mailbox.request.address, 4)?;
+                        self.memory.write(self.mailbox.value.address, &bytes)?;
+                        self.memory.write(self.start, &1_u32.to_le_bytes())?;
+                        self.memory.write(self.end, &1_u32.to_le_bytes())?;
+                    }
+                    self.memory
+                        .write(self.mailbox.reply.address, &[self.response])?;
+                    self.memory.write(self.mailbox.reply_id.address, data)?;
+                }
+                Ok(())
+            }
+            fn snapshots(&mut self) -> &mut Snapshots {
+                self.memory.snapshots()
+            }
+            fn ram(&self) -> &[Range<u64>] {
+                self.memory.ram()
+            }
+        }
+
+        let elf = ElfParser::parse(ELF).unwrap();
+        let mut memory = Fake::from_elf(ELF);
+        let watch = node(&elf, &mut memory, "motor.integral");
+        assert_eq!(kind(&watch), Some(Kind::WatchMut));
+        assert_eq!(
+            render_watch(&elf, &mut memory, &watch).unwrap(),
+            "motor.integral: f32 = <not written yet>\n"
+        );
+        let mailbox = Mailbox::new(&elf, &mut memory, &watch).unwrap();
+        let mut firmware = Firmware {
+            end: field(&elf, &mut memory, &watch, "end").unwrap().address,
+            start: field(&elf, &mut memory, &watch, "start").unwrap().address,
+            memory,
+            mailbox,
+            response: APPLIED as u8,
+        };
+        assert!(
+            request(&elf, &mut firmware, &watch, "0.75")
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            render_watch(&elf, &mut firmware, &watch).unwrap(),
+            "motor.integral: f32 = 0.75\n"
+        );
+        firmware.response = REFUSED as u8;
+        let error = request(&elf, &mut firmware, &watch, "1.5").unwrap_err();
+        assert!(error.to_string().contains("firmware refused"), "{error}");
+        assert_eq!(
+            render_watch(&elf, &mut firmware, &watch).unwrap(),
+            "motor.integral: f32 = 0.75\n"
+        );
+        firmware
+            .memory
+            .write(firmware.start, &2_u32.to_le_bytes())
+            .unwrap();
+        assert!(
+            render_watch(&elf, &mut firmware, &watch)
+                .unwrap()
+                .contains("changed during each of 10 reads")
+        );
+    }
+
+    #[test]
     fn lists_params_then_watches() {
         let elf = ElfParser::parse(ELF).unwrap();
         let mut memory = Fake::from_elf(ELF);
@@ -513,6 +609,7 @@ mod tests {
                 "tune_lab",
                 "tune_lab",
                 "tune_lab",
+                "motor.integral",
                 "motor.error",
                 "motor.output",
                 "motor.speed",

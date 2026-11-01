@@ -12,6 +12,19 @@ pub trait Memory {
     fn transfer(&mut self, address: u64, len: usize) -> Result<Vec<u8>>;
     /// Write `data` at `address`, and drop every snapshot.
     fn write(&mut self, address: u64, data: &[u8]) -> Result<()>;
+    /// Write one naturally aligned 8-, 16-, or 32-bit value. The Cortex-M AP
+    /// implementation uses the corresponding word access. This prevents split
+    /// scalar writes; it does not establish the lifetime of task-local storage.
+    fn write_single_access(&mut self, address: u64, data: &[u8]) -> Result<()> {
+        if !matches!(data.len(), 1 | 2 | 4) || !address.is_multiple_of(data.len() as u64) {
+            bail!(
+                "task-local edits require an aligned 1-, 2-, or 4-byte scalar; \
+                 this write is {} bytes at {address:#010x}",
+                data.len()
+            );
+        }
+        self.write(address, data)
+    }
     fn snapshots(&mut self) -> &mut Snapshots;
     /// RAM, where reading the bytes between two values has no side effects
     fn ram(&self) -> &[Range<u64>];
@@ -219,6 +232,24 @@ mod tests {
     use super::*;
 
     const RAM: &[Range<u64>] = &[0..0x1000, 0x2000_0000..0x2002_0000];
+
+    #[test]
+    fn single_access_writes_reject_split_values_before_modifying_memory() {
+        let mut memory = Fake::new(0x1000, vec![0; 16]);
+        for (address, bytes) in [
+            (0x1000, &[1; 8][..]),
+            (0x1001, &[1; 4][..]),
+            (0x1001, &[1; 2][..]),
+            (0x1000, &[][..]),
+        ] {
+            assert!(memory.write_single_access(address, bytes).is_err());
+        }
+        assert_eq!(memory.read(0x1000, 16).unwrap(), [0; 16]);
+        memory.write_single_access(0x1001, &[1]).unwrap();
+        memory.write_single_access(0x1002, &[2; 2]).unwrap();
+        memory.write_single_access(0x1004, &[3; 4]).unwrap();
+        assert_eq!(memory.read(0x1000, 8).unwrap(), [0, 1, 2, 2, 3, 3, 3, 3]);
+    }
 
     #[test]
     fn merges_nearby_ranges() {

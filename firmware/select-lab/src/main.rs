@@ -138,6 +138,10 @@ async fn control() {
         TICK.wait().await;
         ticks = ticks.wrapping_add(1);
         cortex_m::asm::delay(CONTROL_WORK.get());
+        #[cfg(feature = "profiling")]
+        if ticks.is_multiple_of(100) {
+            tuning_studio_api::embassy::publish();
+        }
         yield_now().await;
         core::hint::black_box(ticks);
     }
@@ -159,6 +163,17 @@ async fn main(spawner: Spawner) {
     }
     // SAFETY: nothing else uses the core peripherals.
     let mut core = unsafe { cortex_m::Peripherals::steal() };
+    #[cfg(feature = "profiling")]
+    {
+        core.DCB.enable_trace();
+        cortex_m::peripheral::DWT::unlock();
+        core.DWT.enable_cycle_counter();
+        tuning_studio_api::embassy::init(
+            cortex_m::peripheral::DWT::cycle_count,
+            core::num::NonZeroU32::new(64_000_000).expect("the core clock is nonzero"),
+        )
+        .expect("the profiler initializes once");
+    }
     // Without the instruction cache, each fetch from flash waits the reset default
     // of 7 cycles.
     core.SCB.enable_icache();

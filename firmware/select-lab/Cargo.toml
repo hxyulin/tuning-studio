@@ -8,6 +8,9 @@ license = "MIT OR Apache-2.0"
 # Standalone firmware, not part of the host workspace.
 [workspace]
 
+[features]
+profiling = ["tuning-studio-api/embassy"]
+
 [dependencies]
 cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
 cortex-m-rt = "0.7"

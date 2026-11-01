@@ -44,7 +44,7 @@ Without a session, a command attaches for its own run and needs `--chip`, and
 | `read` | Read variables or addresses once |
 | `watch` | Read them repeatedly until Ctrl-C, every `--interval` ms; 0 reads as fast as the probe can |
 | `set` | Write one value, then read it back. A `Param` changes through the firmware |
-| `values` | Print every `Param` and `watch!` value the firmware declares |
+| `values` | Print every `Param`, `watch_mut!`, and `watch!` value the firmware declares |
 | `trace` | Record every write to up to four values for `--duration` ms, with its time and the function that wrote it |
 | `tasks` | Profile every Embassy task for `--duration` ms |
 | `halt`, `resume`, `step` | Run control |
@@ -73,8 +73,15 @@ line. Enums print their variant, pointers their address, and `&str` and
 slices their contents.
 `set` writes integers, floats, `bool`, `char` and C-like enum variants.
 
-The CLI refuses a raw write into a `Param`'s or a `watch!` value's fields. Set
-the `Param` itself, and the firmware applies the request.
+For paths through `[task N]`, `set` accepts only naturally aligned 1-, 2-, or
+4-byte scalars. Wider and unaligned task-local writes are rejected. Task-local
+reads and edits while running are best effort: the task can change state after
+the path is resolved, reusing the same address for a different local. A single
+word write avoids a split scalar but does not prevent that race. Raw address
+writes bypass task-path checks.
+
+The CLI refuses a raw write into a `Param`, `watch_mut!`, or `watch!` value's
+fields. Set the `Param` or mutable watch itself, and firmware applies the request.
 
 ## Values and parameters
 
@@ -92,6 +99,16 @@ firmware refused it. While the firmware moves toward the request, the `Param`
 shows its target.
 
 A read of a `watch!` value that overlapped a write is retried, up to 10 times.
+
+`watch_mut!` exposes an editable scalar local. `read` and `watch` show its last
+consistent snapshot; `set` sends a request that firmware applies on its next
+macro call. It waits up to 500 ms for acknowledgment. If no call arrives, the
+request remains pending, including after a timeout. There are no parameter
+defaults, ranges, or step limits. See [editable locals](../tuning-studio-api#editable-locals).
+
+Firmware with the API's optional `embassy` integration can also publish task
+profiling counters as `tuning_studio.tasks`. Read or watch that value like any
+other snapshot; see the [API setup](../tuning-studio-api#embassy-task-profiling).
 
 ## Reading several values
 

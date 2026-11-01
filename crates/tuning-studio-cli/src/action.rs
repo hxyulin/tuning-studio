@@ -19,7 +19,7 @@ pub enum Action {
     /// Record every write to up to four values with the DWT's data trace. The
     /// session pauses its other work while tracing.
     Trace(TraceArgs),
-    /// Print every `Param` and `watch!` value
+    /// Print every `Param`, `watch_mut!`, and `watch!` value
     Values,
     /// Write one value, then read it back. A `Param` changes through the
     /// firmware, which applies its range and step.

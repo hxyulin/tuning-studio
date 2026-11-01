@@ -1,11 +1,13 @@
 # tuning-studio-api
 
-Two primitives for firmware that Tuning Studio reads and tunes over SWD:
+Values for firmware that Tuning Studio reads and tunes over SWD:
 
 - `watch!` copies a value into a static that the host reads. Only the firmware
   writes it.
 - `Param` is a value the host asks to change. The firmware applies the request
   where it chooses, within a declared range and step, and replies.
+- `watch_mut!` publishes a scalar local and applies host edits through a mutable
+  reference. It leaves the local unchanged when no edit is pending.
 
 The crate is `no_std` and has no board, RTOS or transport dependency. It needs
 a `critical-section` implementation, which `cortex-m`'s
@@ -144,6 +146,130 @@ DWARF then described storage that no longer existed.
 See [tune-lab](../../firmware/tune-lab) for a complete program, and
 [select-lab](../../firmware/select-lab) for measurements of task-local reads
 against `watch!` reads.
+
+## Editable locals
+
+Use `watch_mut!` when you want to inspect and edit an existing scalar without
+moving it into a global parameter:
+
+```rust
+use tuning_studio_api::watch_mut;
+
+fn tick(integral: &mut f32) {
+    watch_mut!("pid.integral": f32 = integral);
+    // Continue using the local normally.
+}
+```
+
+For a field, pass `&mut controller.integral`. Each call consumes a pending edit,
+assigns it through the mutable reference, publishes the resulting value, then
+acknowledges the request. Without an edit, it only publishes. Firmware changes
+afterward are published on the next call; an edit is applied once, not enforced
+as an override. Put the call where the change should take effect, usually once
+per control tick. The host never writes the local's address and the API never
+stores its reference, so this works with ordinary task-owned state and needs no
+Embassy feature or task-layout checks.
+
+```sh
+tuning-studio watch pid.integral
+tuning-studio set pid.integral 0.0
+```
+
+`set` waits for the firmware's reply, with the same 500 ms timeout as parameters.
+A timeout leaves the request pending. If the code stops calling the macro, the
+snapshot remains at its last publication and requests wait. A pending request
+can also be applied to a recreated local at the same call site. Acknowledgment
+means that the edit was assigned there, not that later code preserved it.
+
+Supported types are `f32`, `bool`, and signed or unsigned 8-, 16-, and 32-bit
+integers. Invalid boolean and NaN requests are refused. There are no defaults,
+ranges, or step limits; use `Param` when you want those policies. Structs can
+publish read-only snapshots with `watch!`; expose editable scalar fields with
+separate `watch_mut!` calls.
+
+As with `watch!`, names must be unique. Each macro call site owns one static
+mailbox, shared by every call: if several objects or tasks use it, the next one
+to call it consumes the edit. Use separate call sites and names for distinct
+instances. `unit = "rad/s"` and `section = ".name"` work as for `watch!`.
+You can also declare `static INTEGRAL: WatchMut<f32> = WatchMut::new();` and call
+`INTEGRAL.sync(&mut controller.integral)` directly. The CLI rejects writes into
+the snapshot and mailbox fields; set the mutable watch itself.
+
+## Embassy task profiling
+
+Enable the optional `embassy` feature to implement Embassy 0.10's seven executor
+trace hooks. This also enables `embassy-executor/trace`; keep your application's
+normal executor platform features. Only one trace hook provider can be linked.
+Remove other `_embassy_trace_*` implementations when using this integration.
+
+```toml
+tuning-studio-api = { git = "https://github.com/hxyulin/tuning-studio", features = ["embassy"] }
+embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread"] }
+```
+
+Configure a clock once. On a Cortex-M with a DWT cycle counter, using your
+existing core peripheral handle:
+
+```rust,ignore
+core.DCB.enable_trace();
+cortex_m::peripheral::DWT::unlock();
+core.DWT.enable_cycle_counter();
+tuning_studio_api::embassy::init(
+    cortex_m::peripheral::DWT::cycle_count,
+    core::num::NonZeroU32::new(core_hz).expect("the core clock is nonzero"),
+).expect("the profiler initializes once");
+```
+
+The API accepts any short `fn() -> u32` that reads a free-running wrapping clock.
+It does not configure DWT itself. Keep the frequency fixed, and use a clock
+shared by all executors. The critical-section provider must serialize their
+hooks, including across cores if applicable.
+
+From one task, publish periodically, such as every 100 ms:
+
+```rust,ignore
+tuning_studio_api::embassy::publish();
+```
+
+Then use the existing watch interface:
+
+```sh
+tuning-studio watch tuning_studio.tasks --interval 100
+tuning-studio read tuning_studio.tasks
+```
+
+The snapshot contains up to 32 task instances, with opaque task and executor IDs,
+an instance generation, alive/running/ready flags, completed poll and wake counts,
+total elapsed poll ticks, and the longest poll. `sampled_at` records publication
+time, and `tick_hz` gives the clock frequency. Completed instances remain until
+their slot is reused; `untracked` counts spawns omitted when all slots are busy.
+Counters wrap at 32 bits. Difference successive snapshots with wrapping
+arithmetic, and only compare instances with matching IDs and generation.
+
+Elapsed poll time includes interrupts and nested executor polls. It is not
+exclusive CPU time; totals for nested executors can overlap. A poll must take
+less than one full clock wrap. Polls that start before `init` still count but
+do not contribute timing; `timed_polls` distinguishes them. Hooks update a fixed
+table without allocations; `publish` copies it under a critical section and
+publishes a consistent `Watch` snapshot. Measure the added latency on your board.
+The CLI's `tasks` command continues to use its existing PC/future sampling;
+hook counters are available through `values`, `read`, and `watch`.
+
+### Task-local reads and edits
+
+The integration does not require checkpoints in task code. Existing DWARF paths
+can inspect task futures and edit exposed scalar locals. These operations remain
+best effort while running: a task can change its future variant between resolving
+a path and accessing memory. An address can then mean a different local, and a
+write can be overwritten or corrupt task state. Trace hooks do not prevent this.
+
+The CLI restricts edits through `[task N]` paths to naturally aligned 1-, 2-, or
+4-byte scalar accesses. It rejects wider and unaligned edits before writing.
+This avoids splitting the scalar across AP word writes; it does not validate the
+local's lifetime or make read-modify-write operations atomic. These limits apply
+even while halted. Raw address writes remain debugger operations and bypass
+task-path checks. `watch!` copies remain read-only, and `Param` changes still go
+through the firmware request protocol.
 
 ## Not yet
 

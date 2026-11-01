@@ -10,7 +10,7 @@
 
 use cortex_m::peripheral::syst::SystClkSource;
 use cortex_m_rt::{entry, exception};
-use tuning_studio_api::{Watchable, params, watch};
+use tuning_studio_api::{Watchable, params, watch, watch_mut};
 
 params! {
     /// Target speed
@@ -81,6 +81,7 @@ fn main() -> ! {
 
 /// One step of the PI loop and the motor model.
 fn control(motor: &mut Motor) {
+    watch_mut!("motor.integral": f32 = &mut motor.pi.integral);
     let setpoint = SETPOINT.get();
     let kp = KP.get();
     let ki = KI.get();

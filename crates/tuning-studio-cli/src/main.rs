@@ -101,7 +101,7 @@ enum Command {
         #[command(flatten)]
         args: TraceArgs,
     },
-    /// Print every `Param` and `watch!` value the firmware declares with
+    /// Print every `Param`, `watch_mut!`, and `watch!` value the firmware declares with
     /// tuning-studio-api
     Values {
         #[command(flatten)]
@@ -643,7 +643,7 @@ fn span(
 fn read(elf: Option<&ElfInfo>, memory: &mut dyn Memory, location: &Location) -> Result<String> {
     match (location, elf) {
         (Location::Node(node), Some(elf)) => match api::kind(node) {
-            Some(api::Kind::Watch) => api::render_watch(elf, memory, node),
+            Some(api::Kind::Watch | api::Kind::WatchMut) => api::render_watch(elf, memory, node),
             Some(api::Kind::Param) => api::render_param(elf, memory, node),
             None => value::render(elf, memory, node),
         },
@@ -667,7 +667,9 @@ fn set(
 ) -> Result<String> {
     if let (Location::Node(node), Some(elf)) = (location, elf) {
         match api::kind(node) {
-            Some(api::Kind::Param) => return api::request(elf, memory, node, text),
+            Some(api::Kind::Param | api::Kind::WatchMut) => {
+                return api::request(elf, memory, node, text);
+            }
             Some(api::Kind::Watch) => bail!(
                 "{} is a `watch!` value, which only the firmware writes",
                 node.path
@@ -680,7 +682,7 @@ fn set(
                 node.path,
                 owner.path,
                 match kind {
-                    api::Kind::Param =>
+                    api::Kind::Param | api::Kind::WatchMut =>
                         format!("set {} itself, so the firmware applies it", owner.path),
                     api::Kind::Watch => "only the firmware writes a `watch!` value".into(),
                 }
@@ -737,7 +739,13 @@ fn set(
             (node.address, bytes)
         }
     };
-    memory.write(address, &bytes)?;
+    let task_local = matches!(location, Location::Node(node)
+        if node.node.steps.iter().any(|step| matches!(step, Step::Task(_))));
+    if task_local {
+        memory.write_single_access(address, &bytes)?;
+    } else {
+        memory.write(address, &bytes)?;
+    }
     if memory.read(address, bytes.len())? != bytes {
         return Ok(
             "warning: the value read back differs from the value written. The firmware \
@@ -865,6 +873,8 @@ mod api_tests {
         let mut memory = Fake::from_elf(path);
         for (location, expected) in [
             ("motor.speed", "only the firmware writes"),
+            ("motor.integral.snapshot.value", "set motor.integral itself"),
+            ("motor.integral.request", "set motor.integral itself"),
             ("tune_lab::KP.value", "set tune_lab::KP itself"),
             ("tune_lab::KP.max", "set tune_lab::KP itself"),
         ] {

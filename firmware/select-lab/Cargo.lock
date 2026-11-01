@@ -609,6 +609,7 @@ name = "tuning-studio-api"
 version = "0.2.0"
 dependencies = [
  "critical-section",
+ "embassy-executor",
  "tuning-studio-api-macros",
 ]
 

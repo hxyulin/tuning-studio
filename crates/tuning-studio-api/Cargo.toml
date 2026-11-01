@@ -15,9 +15,12 @@ categories = ["embedded", "no-std"]
 default = ["derive"]
 # `#[derive(Watchable)]`
 derive = ["dep:tuning-studio-api-macros"]
+# Embassy 0.10 trace hooks and task profiling. One hook implementation per binary.
+embassy = ["dep:embassy-executor"]
 
 [dependencies]
 critical-section = "1.2"
+embassy-executor = { version = "0.10", default-features = false, features = ["trace"], optional = true }
 tuning-studio-api-macros = { path = "../tuning-studio-api-macros", optional = true }
 
 [dev-dependencies]

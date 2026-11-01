@@ -6,16 +6,26 @@
 //!   `Copy` type, and structs that derive it.
 //! - [`Param`] is a value the host asks to change. The firmware applies the
 //!   request in [`Param::get`], within the declared range and step, and replies.
+//! - [`watch_mut!`] publishes a scalar local and applies host edits through a
+//!   temporary mutable reference. The local keeps its normal Rust ownership.
+//! - The optional `embassy` feature profiles tasks through Embassy 0.10's trace
+//!   hooks and publishes counters through the same watch interface.
 //!
 //! # Layout contract
 //!
-//! The host finds both types by name in the ELF's DWARF and reads their fields by
+//! The host finds these types by name in the ELF's DWARF and reads their fields by
 //! name, so field offsets may change. Renaming a field or changing what it means
 //! is a format change.
 #![no_std]
 
 // The derive names this crate by its path, which this lets its own tests use.
 extern crate self as tuning_studio_api;
+
+mod watch_mut;
+pub use watch_mut::WatchMut;
+
+#[cfg(feature = "embassy")]
+pub mod embassy;
 
 #[cfg(feature = "derive")]
 pub use tuning_studio_api_macros::Watchable;
@@ -334,7 +344,7 @@ fn escape<T>(value: &T) -> &T {
     core::hint::black_box(value)
 }
 
-/// The types a [`Param`] can hold: at most 32 bits, so the host reads them
+/// The types a [`Param`] or [`WatchMut`] can hold: at most 32 bits, so the host reads them
 /// whole.
 pub trait Value: Copy + sealed::Sealed {
     #[doc(hidden)]

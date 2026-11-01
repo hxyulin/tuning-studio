@@ -62,6 +62,16 @@ running toward the next one. `waker::wake` is the cost of `yield_now` waking
 
 ## Results
 
+### Optional executor profiling
+
+Build with `cargo build --release --features profiling` to enable the API's
+Embassy 0.10 trace hooks. The firmware enables the DWT cycle counter at 64 MHz
+and publishes `tuning_studio.tasks` every 100 control ticks (about 100 ms).
+After flashing that build, use `tuning-studio watch tuning_studio.tasks`.
+The counters record completed polls and elapsed poll cycles, including interrupts
+and nested executor time. These hook counters are separate from the `tasks`
+command's sampled profile. The measurements below were made without this feature.
+
 Measured on 2026-10-26 with the Horco CMSIS-DAP probe at 10 MHz SWD unless noted.
 A sample is wrong when its value is not the function of its count.
 
