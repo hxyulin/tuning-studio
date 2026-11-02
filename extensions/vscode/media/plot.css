@@ -1,0 +1,39 @@
+html, body { height: 100%; margin: 0; padding: 0; overflow: hidden; }
+body {
+  color: var(--vscode-foreground);
+  background: var(--vscode-panel-background, var(--vscode-editor-background));
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+}
+#plot, #lanes { height: 100%; min-height: 0; }
+.plot-card { height: 100%; display: flex; flex-direction: column; min-width: 0; }
+header { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 8px 0 12px; flex: none; }
+button, input, select { font: inherit; color: inherit; box-sizing: border-box; }
+button { border: 0; background: transparent; cursor: pointer; }
+button:focus-visible, select:focus-visible, input:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+.plot-title { padding: 3px 4px; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: calc(100% - 32px); }
+.plot-title:hover, .close-plot:hover, .unplot:hover { background: var(--vscode-toolbar-hoverBackground); border-radius: 3px; }
+.title-editor { width: min(320px, calc(100% - 32px)); height: 24px; padding: 2px 4px; border: 0; color: var(--vscode-input-foreground); background: var(--vscode-input-background); }
+.close-plot { margin-left: auto; width: 24px; height: 24px; font-size: 18px; color: var(--vscode-icon-foreground); }
+.plot-body { display: grid; grid-template-columns: clamp(140px, 23%, 260px) minmax(0, 1fr); flex: 1; min-height: 0; }
+.legend { overflow: auto; min-width: 0; padding: 2px 4px 8px 8px; }
+.lane { display: flex; position: relative; align-items: center; height: 28px; }
+.lane-head { display: flex; align-items: center; gap: 7px; width: 100%; height: 100%; text-align: left; padding: 0 24px 0 4px; font-size: 12px; min-width: 0; }
+.lane-head:hover { background: var(--vscode-list-hoverBackground); border-radius: 3px; }
+.swatch { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; font-family: var(--vscode-editor-font-family); }
+.value { margin-left: auto; font-family: var(--vscode-editor-font-family); font-variant-numeric: tabular-nums; color: var(--vscode-descriptionForeground); }
+.is-hidden .lane-head { opacity: 0.4; }
+.is-hidden .swatch { background: transparent !important; border: 1px solid currentColor; box-sizing: border-box; }
+.unplot { position: absolute; right: 0; height: 22px; width: 22px; padding: 0; font-size: 16px; color: var(--vscode-icon-foreground); opacity: 0; }
+.lane:hover .unplot, .lane:focus-within .unplot { opacity: 1; }
+.legend select { width: 100%; margin-top: 6px; padding: 4px; border: 0; background: transparent; color: var(--vscode-descriptionForeground); cursor: pointer; text-overflow: ellipsis; }
+.legend select:disabled { opacity: 0.5; cursor: default; }
+.legend option { background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); }
+.chart { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; padding-right: 4px; }
+.plot-canvas { display: block; width: 100%; flex: 1; min-height: 0; height: 0; }
+.plot-axis { display: block; width: 100%; height: 24px; flex: none; }
+.empty-chart { position: absolute; inset: 0; display: grid; place-content: center; color: var(--vscode-descriptionForeground); font-size: 12px; pointer-events: none; }
+#footer { height: 0; }
+#status { position: absolute; bottom: 26px; right: 64px; max-width: calc(70% - 64px); color: var(--vscode-descriptionForeground); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
+#status:empty { display: none; }

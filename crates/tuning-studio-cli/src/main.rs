@@ -4,6 +4,7 @@ mod daemon;
 mod debug;
 mod flash;
 mod gdb;
+mod inspect;
 mod logs;
 mod memory;
 mod path;
@@ -25,8 +26,8 @@ use studio_dwarf::tree::{self, NodeKind, Step};
 use studio_dwarf::{ElfInfo, ElfParser};
 
 use action::{
-    Action, BreakArgs, DeleteArgs, FlashArgs, ReadArgs, ResetArgs, SetArgs, TasksArgs, TraceArgs,
-    WatchArgs,
+    Action, BreakArgs, DeleteArgs, FlashArgs, InspectArgs, ReadArgs, ResetArgs, SetArgs, TasksArgs,
+    TraceArgs, WatchArgs,
 };
 use flash::AfterReset;
 use memory::Memory;
@@ -106,6 +107,13 @@ enum Command {
     Values {
         #[command(flatten)]
         target: TargetArgs,
+    },
+    /// Inspect declared API values or selected locations as versioned JSON
+    Inspect {
+        #[command(flatten)]
+        target: TargetArgs,
+        #[command(flatten)]
+        args: InspectArgs,
     },
     /// Write one value, then read it back. A `Param` changes through the
     /// firmware, which applies its range and step.
@@ -373,6 +381,21 @@ fn main() -> Result<()> {
             let elf = elf.ok_or_else(|| anyhow!("pass --elf to find the values"))?;
             let mut session = probe.session.lock();
             print!("{}", api::values(&elf, &mut probe.memory(&mut session)?)?);
+        }
+        Command::Inspect { target, args } => {
+            if let Some(session) = target.probe.session()? {
+                return daemon::request(session, Action::Inspect(args).to_words());
+            }
+            let (probe, elf) = target.attach()?;
+            let mut session = probe.session.lock();
+            print!(
+                "{}",
+                inspect::inspect(
+                    elf.as_ref(),
+                    &mut probe.memory(&mut session)?,
+                    &args.locations
+                )?
+            );
         }
         Command::Set { target, args } => {
             if let Some(session) = target.probe.session()? {

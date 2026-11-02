@@ -1,5 +1,25 @@
 # tuning-studio-cli
 
+The [VS Code extension](../../extensions/vscode) uses `inspect` to read values
+from the same session as the terminal commands.
+
+`tuning-studio inspect` returns JSON with `version: 1` and a `values` array.
+Without paths it discovers the API declarations; with paths it samples those
+locations in order. Each entry has `path`, `type`, `kind`, `writable` and
+`display`, plus optional `number` and `error`. Kinds are `param`, `watch_mut`,
+`watch` and `raw` (ordinary DWARF locations or addresses). A bad path produces
+an error entry without hiding good paths. Empty discovery returns an empty
+array. Numbers come from the displayed scalar's snapshot; unpublished or torn
+watches and non-finite floats have no numeric sample. Graph numbers use f64,
+so wide integers may lose precision; display text keeps the scalar's digits.
+This interface currently emits aggregates as one display entry. It does not
+provide a structured child tree or profiling events.
+
+```sh
+tuning-studio inspect
+tuning-studio inspect -- motor.speed motor.integral
+```
+
 The `tuning-studio` command reads, writes and tunes variables in running
 firmware through a [probe-rs](https://probe.rs) debug probe. It flashes and
 runs firmware, prints its RTT and defmt logs, and serves GDB. Reads go through

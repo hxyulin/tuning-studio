@@ -21,6 +21,8 @@ pub enum Action {
     Trace(TraceArgs),
     /// Print every `Param`, `watch_mut!`, and `watch!` value
     Values,
+    /// Inspect declared API values or selected locations as versioned JSON
+    Inspect(InspectArgs),
     /// Write one value, then read it back. A `Param` changes through the
     /// firmware, which applies its range and step.
     Set(SetArgs),
@@ -53,6 +55,12 @@ pub struct ReadArgs {
     /// with an optional type and path, such as `0x24000070`, `0x24000070:f32` or
     /// `0x20000038:Axis.gains.2`. Types other than the primitives need an ELF.
     #[arg(required = true)]
+    pub locations: Vec<String>,
+}
+
+#[derive(Args, Debug, PartialEq)]
+pub struct InspectArgs {
+    /// Symbol paths or addresses, as for `read`; omit to discover API values
     pub locations: Vec<String>,
 }
 
@@ -170,6 +178,10 @@ impl Action {
                 push(&mut words, &["--duration", &args.duration.to_string()]);
             }
             Action::Values => push(&mut words, &["values"]),
+            Action::Inspect(args) => {
+                push(&mut words, &["inspect", "--"]);
+                words.extend(args.locations.iter().cloned());
+            }
             Action::Set(args) => push(&mut words, &["set", &args.location, &args.value]),
             Action::Halt => push(&mut words, &["halt"]),
             Action::Resume => push(&mut words, &["resume"]),

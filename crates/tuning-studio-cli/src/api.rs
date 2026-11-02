@@ -64,7 +64,7 @@ pub fn owner(
     Ok(None)
 }
 
-fn field(
+pub(crate) fn field(
     elf: &ElfInfo,
     memory: &mut dyn Memory,
     node: &SymbolNode,
@@ -336,8 +336,8 @@ pub fn request(
     }
 }
 
-/// Every `Param`, then every `Watch`, in the ELF.
-pub fn values(elf: &ElfInfo, memory: &mut dyn Memory) -> Result<String> {
+/// API declarations in kind and path order, including mutable watches.
+pub fn declared(elf: &ElfInfo, memory: &mut dyn Memory) -> Vec<(Kind, SymbolNode)> {
     let mut found: Vec<(Kind, SymbolNode)> = Vec::new();
     for symbol in elf.variables() {
         let Ok(node) = path::describe(elf, memory, &NodeRef::root(symbol.demangled_name.clone()))
@@ -349,6 +349,12 @@ pub fn values(elf: &ElfInfo, memory: &mut dyn Memory) -> Result<String> {
         }
     }
     found.sort_by(|a, b| (a.0, &a.1.path).cmp(&(b.0, &b.1.path)));
+    found
+}
+
+/// Render the declared API values, in kind and path order.
+pub fn values(elf: &ElfInfo, memory: &mut dyn Memory) -> Result<String> {
+    let found = declared(elf, memory);
     if found.is_empty() {
         bail!("the ELF declares no `Param`, `WatchMut`, or `Watch` from tuning-studio-api");
     }

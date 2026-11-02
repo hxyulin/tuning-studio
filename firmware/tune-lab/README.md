@@ -39,5 +39,9 @@ it:
 cp firmware/tune-lab/target/thumbv7em-none-eabihf/release/tune-lab crates/tuning-studio-cli/tests/fixtures/tune_lab.elf
 ```
 
-The mutable-watch path has been built for Cortex-M and checked with simulated
-host memory. Its behavior on the board has not been verified.
+On 2026-11-02, `watch_mut!` was checked on the STM32H723 with a Horco CMSIS-DAP
+probe through the VS Code extension. After setting KI to zero, an edit to
+`motor.integral` applied 0.25 and subsequent reads retained it. Changing the
+setpoint from 100 to 180 rad/s produced the expected simulated-motor response
+in the plot. Parameter clamping and rejection of direct writes to a read-only
+watch or a mailbox backing field were also checked through the CLI.

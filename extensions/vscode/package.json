@@ -1,0 +1,466 @@
+{
+  "name": "tuning-studio",
+  "displayName": "Tuning Studio",
+  "description": "Run firmware, watch and set values, sample Embassy tasks and plot live values through the tuning-studio CLI.",
+  "version": "0.1.0",
+  "publisher": "hxyulin",
+  "license": "MIT OR Apache-2.0",
+  "private": true,
+  "extensionKind": [
+    "workspace"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hxyulin/tuning-studio"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Debuggers",
+    "Visualization"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "workspaceContains:Cargo.toml",
+    "workspaceContains:.cargo/config.toml"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "tuningStudio",
+          "title": "Tuning Studio",
+          "icon": "media/icon.svg"
+        }
+      ],
+      "panel": [
+        {
+          "id": "tuningStudioPanel",
+          "title": "Tuning Studio",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "tuningStudio": [
+        {
+          "id": "tuningStudio.session",
+          "name": "Session"
+        },
+        {
+          "id": "tuningStudio.watch",
+          "name": "Live Watch",
+          "type": "webview"
+        },
+        {
+          "id": "tuningStudio.tasks",
+          "name": "Tasks"
+        }
+      ],
+      "tuningStudioPanel": [
+        {
+          "id": "tuningStudio.plot",
+          "type": "webview",
+          "name": "Plot"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "tuningStudio.tasks",
+        "contents": "Sample each Embassy task's state for a short window. The session pauses its other reads while it samples.\n[Sample Tasks](command:tuningStudio.sampleTasks)",
+        "when": "!tuningStudio.tasksSampled"
+      }
+    ],
+    "taskDefinitions": [
+      {
+        "type": "tuning-studio",
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "The tuning-studio step this task runs."
+          }
+        }
+      }
+    ],
+    "commands": [
+      {
+        "command": "tuningStudio.run",
+        "title": "Run Firmware",
+        "category": "Tuning Studio",
+        "icon": "$(play)",
+        "enablement": "!tuningStudio.busy"
+      },
+      {
+        "command": "tuningStudio.stop",
+        "title": "Stop Session",
+        "category": "Tuning Studio",
+        "icon": "$(debug-stop)",
+        "enablement": "tuningStudio.owned"
+      },
+      {
+        "command": "tuningStudio.refreshSession",
+        "title": "Refresh",
+        "category": "Tuning Studio",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "tuningStudio.selectProbe",
+        "title": "Select Probe\u2026",
+        "category": "Tuning Studio",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "tuningStudio.selectLaunchConfiguration",
+        "title": "Select Launch Configuration\u2026",
+        "category": "Tuning Studio"
+      },
+      {
+        "command": "tuningStudio.showLog",
+        "title": "Show Log",
+        "category": "Tuning Studio",
+        "icon": "$(output)"
+      },
+      {
+        "command": "tuningStudio.addWatch",
+        "title": "Add Watch\u2026",
+        "category": "Tuning Studio",
+        "icon": "$(add)"
+      },
+      {
+        "command": "tuningStudio.editWatch",
+        "title": "Edit Watch\u2026",
+        "category": "Tuning Studio"
+      },
+      {
+        "command": "tuningStudio.removeWatch",
+        "title": "Remove Watch",
+        "category": "Tuning Studio",
+        "icon": "$(close)"
+      },
+      {
+        "command": "tuningStudio.setValue",
+        "title": "Set Value\u2026",
+        "category": "Tuning Studio",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "tuningStudio.copyValue",
+        "title": "Copy Value",
+        "category": "Tuning Studio"
+      },
+      {
+        "command": "tuningStudio.copyPath",
+        "title": "Copy Path",
+        "category": "Tuning Studio"
+      },
+      {
+        "command": "tuningStudio.pausePolling",
+        "title": "Pause Polling",
+        "category": "Tuning Studio",
+        "icon": "$(debug-pause)"
+      },
+      {
+        "command": "tuningStudio.resumePolling",
+        "title": "Resume Polling",
+        "category": "Tuning Studio",
+        "icon": "$(debug-continue)"
+      },
+      {
+        "command": "tuningStudio.sampleTasks",
+        "title": "Sample Tasks",
+        "category": "Tuning Studio",
+        "icon": "$(refresh)",
+        "enablement": "!tuningStudio.tasksSampling"
+      },
+      {
+        "command": "tuningStudio.showTasksOutput",
+        "title": "Show Tasks Output",
+        "category": "Tuning Studio",
+        "icon": "$(output)",
+        "enablement": "tuningStudio.tasksSampled"
+      },
+      {
+        "command": "tuningStudio.clearPlot",
+        "title": "Clear Plot",
+        "category": "Tuning Studio",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "tuningStudio.setPlotWindow",
+        "title": "Set Plot Window\u2026",
+        "category": "Tuning Studio",
+        "icon": "$(clock)"
+      },
+      {
+        "command": "tuningStudio.pausePlot",
+        "title": "Freeze Plot",
+        "category": "Tuning Studio",
+        "icon": "$(debug-pause)"
+      },
+      {
+        "command": "tuningStudio.resumePlot",
+        "title": "Unfreeze Plot",
+        "category": "Tuning Studio",
+        "icon": "$(debug-continue)"
+      },
+      {
+        "command": "tuningStudio.insertMutableWatch",
+        "title": "Insert watch_mut! for Selection",
+        "category": "Tuning Studio"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "tuningStudio.run",
+          "when": "view == tuningStudio.session && !tuningStudio.owned",
+          "group": "navigation@1"
+        },
+        {
+          "command": "tuningStudio.stop",
+          "when": "view == tuningStudio.session && tuningStudio.owned",
+          "group": "navigation@1"
+        },
+        {
+          "command": "tuningStudio.refreshSession",
+          "when": "view == tuningStudio.session",
+          "group": "navigation@2"
+        },
+        {
+          "command": "tuningStudio.selectProbe",
+          "when": "view == tuningStudio.session",
+          "group": "1_config@1"
+        },
+        {
+          "command": "tuningStudio.selectLaunchConfiguration",
+          "when": "view == tuningStudio.session",
+          "group": "1_config@2"
+        },
+        {
+          "command": "tuningStudio.showLog",
+          "when": "view == tuningStudio.session",
+          "group": "2_log@1"
+        },
+        {
+          "command": "tuningStudio.addWatch",
+          "when": "view == tuningStudio.watch",
+          "group": "navigation@1"
+        },
+        {
+          "command": "tuningStudio.pausePolling",
+          "when": "view == tuningStudio.watch && !tuningStudio.pollingPaused",
+          "group": "navigation@2"
+        },
+        {
+          "command": "tuningStudio.resumePolling",
+          "when": "view == tuningStudio.watch && tuningStudio.pollingPaused",
+          "group": "navigation@2"
+        },
+        {
+          "command": "tuningStudio.sampleTasks",
+          "when": "view == tuningStudio.tasks",
+          "group": "navigation@1"
+        },
+        {
+          "command": "tuningStudio.showTasksOutput",
+          "when": "view == tuningStudio.tasks",
+          "group": "navigation@2"
+        },
+        {
+          "command": "tuningStudio.pausePlot",
+          "when": "view == tuningStudio.plot && !tuningStudio.plotPaused",
+          "group": "navigation@1"
+        },
+        {
+          "command": "tuningStudio.resumePlot",
+          "when": "view == tuningStudio.plot && tuningStudio.plotPaused",
+          "group": "navigation@1"
+        },
+        {
+          "command": "tuningStudio.setPlotWindow",
+          "when": "view == tuningStudio.plot",
+          "group": "navigation@2"
+        },
+        {
+          "command": "tuningStudio.clearPlot",
+          "when": "view == tuningStudio.plot",
+          "group": "navigation@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "tuningStudio.setValue",
+          "when": "view == tuningStudio.watch && viewItem =~ /\\bwritable\\b/",
+          "group": "inline@1"
+        },
+        {
+          "command": "tuningStudio.removeWatch",
+          "when": "view == tuningStudio.watch && viewItem =~ /\\bwatched\\b/",
+          "group": "inline@2"
+        },
+        {
+          "command": "tuningStudio.setValue",
+          "when": "view == tuningStudio.watch && viewItem =~ /\\bwritable\\b/",
+          "group": "1_edit@1"
+        },
+        {
+          "command": "tuningStudio.editWatch",
+          "when": "view == tuningStudio.watch && viewItem =~ /\\bwatched\\b/",
+          "group": "1_edit@2"
+        },
+        {
+          "command": "tuningStudio.removeWatch",
+          "when": "view == tuningStudio.watch && viewItem =~ /\\bwatched\\b/",
+          "group": "1_edit@3"
+        },
+        {
+          "command": "tuningStudio.copyValue",
+          "when": "view == tuningStudio.watch && viewItem =~ /\\bvalue\\b/",
+          "group": "2_copy@1"
+        },
+        {
+          "command": "tuningStudio.copyPath",
+          "when": "view == tuningStudio.watch && viewItem =~ /\\b(value|watched)\\b/",
+          "group": "2_copy@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "tuningStudio.editWatch",
+          "when": "false"
+        },
+        {
+          "command": "tuningStudio.removeWatch",
+          "when": "false"
+        },
+        {
+          "command": "tuningStudio.setValue",
+          "when": "false"
+        },
+        {
+          "command": "tuningStudio.copyValue",
+          "when": "false"
+        },
+        {
+          "command": "tuningStudio.copyPath",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Tuning Studio",
+      "properties": {
+        "tuningStudio.executable": {
+          "type": "string",
+          "default": "tuning-studio",
+          "scope": "machine-overridable",
+          "markdownDescription": "The `tuning-studio` command, found on `PATH`, or an absolute path."
+        },
+        "tuningStudio.probe": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Probe as `VID:PID` or `VID:PID:SERIAL`. Passed as `--probe` to every command. Empty picks the only session or probe."
+        },
+        "tuningStudio.runMode": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "cargo",
+            "task"
+          ],
+          "enumDescriptions": [
+            "`task` when an ELF is known from settings or launch.json, otherwise `cargo`.",
+            "`cargo run`, with `tuning-studio run` as the Cargo runner for the build target.",
+            "Run the build task, then `tuning-studio run --chip <chip> <elf>`."
+          ],
+          "default": "auto",
+          "markdownDescription": "How **Run Firmware** builds and starts the session."
+        },
+        "tuningStudio.launchConfiguration": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Name of a `probe-rs-debug` configuration in `.vscode/launch.json` to take `chip`, `coreConfigs[0].programBinary` and `preLaunchTask` from. Empty uses the first `launch` configuration."
+        },
+        "tuningStudio.chip": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "probe-rs chip name, such as `STM32H723VGTx`. Overrides launch.json and the Cargo runner's `--chip`."
+        },
+        "tuningStudio.elf": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Firmware ELF for `task` mode, relative to the workspace folder. Overrides launch.json's `programBinary`."
+        },
+        "tuningStudio.buildTask": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Label of the task that builds the ELF in `task` mode. Overrides launch.json's `preLaunchTask`."
+        },
+        "tuningStudio.cargoTarget": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Target triple for `cargo` mode. Empty uses `build.target` from `.cargo/config.toml`."
+        },
+        "tuningStudio.cargoArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Extra arguments after `cargo run`, such as `[\"--release\"]`."
+        },
+        "tuningStudio.pollInterval": {
+          "type": "number",
+          "default": 200,
+          "minimum": 20,
+          "maximum": 10000,
+          "markdownDescription": "Milliseconds between `inspect` polls. A poll starts only after the previous one finished."
+        },
+        "tuningStudio.tasksDuration": {
+          "type": "number",
+          "default": 200,
+          "minimum": 50,
+          "maximum": 10000,
+          "markdownDescription": "Milliseconds `tasks` samples for. The session pauses its other reads meanwhile."
+        },
+        "tuningStudio.plotWindow": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "maximum": 3600,
+          "markdownDescription": "Seconds of history the plot shows."
+        },
+        "tuningStudio.plotCapacity": {
+          "type": "number",
+          "default": 6000,
+          "minimum": 100,
+          "maximum": 100000,
+          "markdownDescription": "Samples kept per plotted value. Older samples are dropped."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile",
+    "test": "node --test out/test/",
+    "package": "npx --yes @vscode/vsce@4.1.0 package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@types/vscode": "1.90.0",
+    "typescript": "5.9.3"
+  }
+}

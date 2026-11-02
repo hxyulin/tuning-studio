@@ -447,6 +447,10 @@ fn handle(
     let elf = state.elf.as_ref();
     match command {
         SessionCommand::Action(Action::Reset(_) | Action::Flash { .. }) => unreachable!(),
+        SessionCommand::Action(Action::Inspect(args)) => {
+            *out +=
+                &crate::inspect::inspect(elf, &mut target.memory(&mut session)?, &args.locations)?;
+        }
         SessionCommand::Action(Action::Read(ReadArgs { locations })) => {
             let mut memory = target.memory(&mut session)?;
             *out += &crate::read_locations(elf, &mut memory, &locations)?;
@@ -899,6 +903,10 @@ mod tests {
                 duration: 2000,
             }),
             Action::Values,
+            Action::Inspect(crate::action::InspectArgs { locations: vec![] }),
+            Action::Inspect(crate::action::InspectArgs {
+                locations: strings(&["pool[task 0].future", "--odd"]),
+            }),
             Action::Set(SetArgs {
                 location: "a.b".into(),
                 value: "-1.5".into(),

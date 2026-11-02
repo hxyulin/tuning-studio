@@ -12,6 +12,12 @@
   <a href="firmware">Lab firmware</a>
 </p>
 
+The [VS Code extension](extensions/vscode) adds Run Firmware, Live Watch,
+Tasks and a numeric plotter. It imports chip, ELF and build settings from Cargo
+or a probe-rs launch configuration. See the
+[control training integration](extensions/vscode/examples/control-training-template.md)
+for an example using existing PID fields and `watch_mut!`.
+
 `tuning-studio` reads variables out of a running microcontroller by name,
 without halting it. It finds each symbol in the ELF's DWARF,
 decodes structs, enums, arrays and pointers, and reads them through a
