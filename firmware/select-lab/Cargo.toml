@@ -9,6 +9,7 @@ license = "MIT OR Apache-2.0"
 [workspace]
 
 [features]
+plot-demo = []
 profiling = ["tuning-studio-api/embassy"]
 
 [dependencies]

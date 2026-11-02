@@ -90,6 +90,12 @@ async fn sine() -> ! {
         }
         if sample.count.is_multiple_of(current.watch_every) {
             watch!("waves.sine": Sample = sample);
+            #[cfg(feature = "plot-demo")]
+            {
+                watch!("waves.phase_a": f32 = sample.value);
+                watch!("waves.phase_b": f32 = sine_at(sample.count.wrapping_add(STEPS / 3)));
+                watch!("waves.phase_c": f32 = sine_at(sample.count.wrapping_add(2 * STEPS / 3)));
+            }
         }
         yield_now().await;
         // Keeps `sample` live across the await, so it sits in the future.

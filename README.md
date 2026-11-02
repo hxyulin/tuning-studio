@@ -13,6 +13,11 @@
   <a href="firmware">Lab firmware</a>
 </p>
 
+![Tuning Studio in VS Code, showing Live Watch, Embassy tasks, and three phase-shifted sine waves](docs/images/vscode-hero.png)
+
+Live data from an STM32H723 over SWD. The [plot demo](firmware/select-lab#plot-demo)
+publishes three phase-shifted waves alongside the lab's Embassy tasks.
+
 The [VS Code extension](extensions/vscode) adds Run Firmware, Live Watch,
 Tasks and a numeric plotter. It imports chip, ELF and build settings from Cargo
 or a probe-rs launch configuration. See the

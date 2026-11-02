@@ -60,6 +60,30 @@ lines show the `.await` each task reached last, which includes time spent
 running toward the next one. `waker::wake` is the cost of `yield_now` waking
 `waves` on every iteration.
 
+## Plot demo
+
+The optional `plot-demo` feature adds three scalar `watch!` values for the
+VS Code plotter, approximately 120° apart. The normal build keeps the stress
+lab's original publications. From this directory:
+
+```sh
+cargo run --release --features plot-demo
+```
+
+In another terminal, slow the waves enough to see their shape:
+
+```sh
+tuning-studio set select_lab::WATCH_EVERY 8
+tuning-studio set select_lab::SPIN 100000
+```
+
+In VS Code, add `waves.phase_a`, `waves.phase_b`, and `waves.phase_c` using
+**+ Add variable** in Plot. A 10-second window and
+`"tuningStudio.pollInterval": 50` show several cycles. The samples are read
+from the board over SWD; plot time is the host's read time. With `SPIN` set,
+parameters are only checked once per 1024 iterations, so later edits can take
+longer than the CLI's 500 ms reply timeout. A timed-out request remains pending.
+
 ## Results
 
 ### Optional executor profiling
