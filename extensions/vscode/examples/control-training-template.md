@@ -99,8 +99,9 @@ integral separate from the configured gain values.
 ## Watch, plot, and inspect tasks
 
 Declared values appear in Live Watch automatically. Set Value sends a request
-through the firmware mailbox and shows its reply. Check numeric rows to plot
-them. Plot time is the host's sample time, not the control-loop timestamp.
+through the firmware mailbox and shows its reply. Use **+ Add variable** in
+the Plot panel to choose numeric values. Plot time is the host's sample time,
+not the control-loop timestamp.
 Polling at 200 ms shows trends, not every iteration of a 1 kHz loop.
 
 Sample Tasks captures the existing PC/future-state sampler for a short window.

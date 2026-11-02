@@ -6,6 +6,7 @@
   <a href="#license"><img alt="MIT or Apache-2.0" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue"></a>
 </p>
 <p align="center">
+  <a href="extensions/vscode">VS Code extension</a> ·
   <a href="crates/tuning-studio-cli">CLI</a> ·
   <a href="crates/tuning-studio-api">Firmware API</a> ·
   <a href="crates/studio-dwarf">DWARF library</a> ·
@@ -53,80 +54,163 @@ tune_lab::SETPOINT: f32 = 104.0 rad/s (target 120.0, default 100.0, -300.0 to 30
 
 ## Quickstart
 
-<details>
-<summary><strong>Install the CLI and read a running board</strong></summary>
-
-Install [Rust](https://rustup.rs/), then the CLI from this repository:
-
-```sh
-cargo install --git https://github.com/hxyulin/tuning-studio tuning-studio-cli --locked
-```
-
-The installed command is `tuning-studio`. On Linux, probe-rs needs
+Build the CLI and VS Code extension from source for now. You need Git,
+[Rust](https://rustup.rs/) with the toolchain in `rust-toolchain.toml`,
+Node.js 22 or newer with npm, VS Code, and a probe supported by
+[probe-rs](https://probe.rs). The CLI and extension currently support macOS
+and Linux. On Linux, install the probe-rs
 [udev rules](https://probe.rs/docs/getting-started/probe-setup/) for your probe.
 
-```sh
-tuning-studio list                                    # connected probes
-tuning-studio read --chip STM32H723VGTx --elf firmware.elf CONTROL.yaw
-tuning-studio watch --chip STM32H723VGTx --elf firmware.elf --interval 10 imu.gyro
-```
-
-Use it as the Cargo runner in your firmware's `.cargo/config.toml`, so
-`cargo run` flashes the board and keeps a session open:
-
-```toml
-[target.thumbv7em-none-eabihf]
-runner = "tuning-studio run --chip STM32H723VGTx"
-```
-
-While that session runs, other terminals and scripts need no `--chip` or
-`--elf`:
+### 1. Build and install the tools
 
 ```sh
-tuning-studio values
-tuning-studio watch motor.speed
-tuning-studio tasks --duration 2000
+git clone https://github.com/hxyulin/tuning-studio.git
+cd tuning-studio
+cargo install --path crates/tuning-studio-cli --locked
+
+cd extensions/vscode
+npm ci
+npm run package
+code --install-extension tuning-studio-0.1.0.vsix
 ```
 
-See the [CLI README](crates/tuning-studio-cli) for every command.
+The CLI installs as `tuning-studio`. Make sure it is on the `PATH` VS Code
+uses, or set `tuningStudio.executable` to its absolute path. If the `code`
+command is unavailable, use **Extensions: Install from VSIX...** in VS Code
+and select `extensions/vscode/tuning-studio-0.1.0.vsix` from your checkout.
 
-</details>
+### 2. Expose firmware values
 
-<details>
-<summary><strong>Declare values and parameters in firmware</strong></summary>
+Add the `no_std` API to your firmware's `Cargo.toml` and keep debug information
+in its ELF, including release builds:
 
 ```toml
 [dependencies]
 tuning-studio-api = { git = "https://github.com/hxyulin/tuning-studio" }
+
+[profile.release]
+debug = 2
+strip = "none"
 ```
 
+The API needs a `critical-section` implementation. Use the one your firmware
+already provides, such as Embassy's, or enable `cortex-m`'s
+`critical-section-single-core` feature on a single-core Cortex-M target.
+
+Choose how to expose each value:
+
+| API | Use it for | How edits work |
+| --- | --- | --- |
+| `watch!` | Read-only telemetry, including snapshots of structs | Publishes a copy each time the firmware calls it; the host cannot edit it |
+| `watch_mut!` | Testing or tuning an existing scalar local or field | Applies a pending edit through your mutable reference, then publishes the value |
+| `params!` / `Param` | Configuration such as setpoints and PID gains | `get()` applies host requests within the declared range and step limit |
+
+For example, in a control loop:
+
 ```rust
-use tuning_studio_api::{params, watch};
+use tuning_studio_api::{params, watch, watch_mut};
 
 params! {
     static SETPOINT: f32 = 100.0, range = -300.0..=300.0, max_step = 1.0, unit = "rad/s";
     static KP: f32 = 0.02, range = 0.0..=1.0, max_step = 0.01;
 }
 
-fn control(speed: f32) -> f32 {
+// Call once per control tick with the controller's existing integral field.
+fn control_tick(speed: f32, integral: &mut f32, dt: f32) -> f32 {
+    // Apply an edit here, before using the local. Without an edit, only publish it.
+    watch_mut!("motor.integral": f32 = integral);
+
     let error = SETPOINT.get() - speed;
+    *integral += error * dt;
+    watch!("motor.speed": f32 = speed, unit = "rad/s");
     watch!("motor.error": f32 = error, unit = "rad/s");
-    KP.get() * error
+
+    KP.get() * error + *integral
 }
 ```
 
-Keep debug information in the release profile (`debug = 2`). The
-[API README](crates/tuning-studio-api) explains why task locals cannot be read
-reliably and how `Param` keeps host writes safe.
+The host can read the last `watch!` snapshot even while the task is suspended.
+`watch_mut!` keeps the variable in your controller; for a field, pass
+`&mut controller.integral`. An edit takes effect once at the next macro call,
+and later firmware code can change it again. It supports `f32`, `bool`, and
+8-, 16-, and 32-bit integers, with no range or step limits. Use a unique name
+and a separate macro call site for each value you expose.
 
-</details>
+Call each parameter's `get()` once per control tick to apply requests and
+advance its step limit. Parameter persistence to flash is not implemented yet.
+See the [firmware API guide](crates/tuning-studio-api) for struct snapshots,
+editable locals, and optional Embassy trace hooks.
+
+### 3. Run, watch, and tune in VS Code
+
+Open your firmware project in VS Code. For a Cargo project, the extension
+reads the chip and target from `.cargo/config.toml`. For example, on an
+STM32H723:
+
+```toml
+[build]
+target = "thumbv7em-none-eabihf"
+
+[target.thumbv7em-none-eabihf]
+runner = "tuning-studio run --chip STM32H723VGTx"
+```
+
+Use your board's chip and target triple, install that Rust target, and keep
+your project's existing linker flags. An existing `probe-rs run --chip …`
+runner also works: the extension overrides it for its Run command. For a
+project with a probe-rs `launch.json`, it can import the chip, ELF, and
+`preLaunchTask` instead.
+
+To build firmware in release mode, add this to `.vscode/settings.json`:
+
+```json
+{
+  "tuningStudio.cargoArgs": ["--release", "--locked"]
+}
+```
+
+Connect the board and probe, open **Tuning Studio** in the activity bar, and
+click **Run Firmware** in Session. Run builds and flashes the firmware, then
+prints its logs in a terminal. Stop any active probe-rs debug session first.
+
+- **Live Watch** discovers `params!`, `watch!`, and `watch_mut!` values.
+  Click a writable value to edit it inline, Enter to submit, or Escape to
+  cancel. Read-only and unavailable values are dimmed; clicking one explains
+  the reason and offers a source suggestion where applicable.
+- **Plot** overlays up to eight numeric variables. Choose **+ Add variable**
+  in the plot's left-hand list, click a variable to hide or show it, and hover
+  to reveal its remove button.
+- **Tasks** samples Embassy task states when you click **Sample Tasks**.
+  Click a state with a source location to open its await point. This sampler
+  does not require enabling the API's optional Embassy trace hooks.
+
+The [extension guide](extensions/vscode) covers Run settings and UI behavior.
+The [control training integration](extensions/vscode/examples/control-training-template.md)
+shows how to expose existing PID fields with `watch_mut!` and use a custom
+build task.
+
+You can also use the CLI while the session runs, without repeating the chip
+or ELF:
+
+```sh
+tuning-studio values
+tuning-studio watch motor.speed motor.error
+tuning-studio set motor.integral 0.0
+# Replace my_firmware with your crate's module path.
+tuning-studio set my_firmware::SETPOINT 120
+tuning-studio tasks --duration 2000
+```
+
+Run `tuning-studio list` to list probes. For a CLI-only workflow,
+`cargo run --release` uses the runner above to build, flash, and start a
+session. See the [CLI guide](crates/tuning-studio-cli) for all commands.
 
 ## Crates
 
 | Crate | What it is |
 | --- | --- |
 | [`tuning-studio-cli`](crates/tuning-studio-cli) | The `tuning-studio` command |
-| [`tuning-studio-api`](crates/tuning-studio-api) | `no_std` firmware crate with `watch!`, `Param` and `params!` |
+| [`tuning-studio-api`](crates/tuning-studio-api) | `no_std` firmware crate with `watch!`, `watch_mut!`, `Param` and `params!` |
 | [`tuning-studio-api-macros`](crates/tuning-studio-api-macros) | `#[derive(Watchable)]`, re-exported by `tuning-studio-api` |
 | [`tuning-studio-dwarf`](crates/studio-dwarf) | ELF symbols, DWARF types and Embassy task layouts |
 
@@ -140,7 +224,7 @@ measurements.
 | --- | --- |
 | [type-lab](firmware/type-lab) | Reads and writes of every value shape: integers, floats, enums, `Option`, unions, pointers, slices |
 | [log-lab](firmware/log-lab) | RTT text and defmt logs, and panics caught by `run` |
-| [tune-lab](firmware/tune-lab) | `Param` and `watch!` on a PI loop driving a simulated motor |
+| [tune-lab](firmware/tune-lab) | `Param`, `watch!`, and `watch_mut!` on a PI loop driving a simulated motor |
 | [select-lab](firmware/select-lab) | Reading async state under `select`, read rates, and the `tasks` profiler |
 
 Tuning Studio has been tested on an STM32H723 with a CMSIS-DAP probe. Other
