@@ -2,7 +2,7 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { Cli } from './cli';
 import { Failure, parseProbeList, setArgs, tasksArgs } from './cliText';
-import { InspectValue } from './inspect';
+import { InspectValue, flattenValues } from './inspect';
 import { LiveWatch } from './liveWatch';
 import { MAX_SERIES, PlotModel, PlotViewProvider } from './plotView';
 import { SessionController, SessionState } from './session';
@@ -97,7 +97,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const updateWatchView = () => {
     watchTree.refresh();
     watchView.refresh(watchTree.message() ?? '');
-    const choices = [...new Set([...watch.declared, ...watch.watchedValues.values()].flat().filter(v => v.number !== undefined || /^(?:[ui](?:8|16|32|64|128|size)|f(?:32|64))$/.test(v.type)).map(v => v.path))];
+    const choices = [...new Set(flattenValues([...watch.declared, ...watch.watchedValues.values()].flat()).filter(v => v.number !== undefined || /^(?:[ui](?:8|16|32|64|128|size)|f(?:32|64))$/.test(v.type)).map(v => v.path))];
     if (JSON.stringify(choices) !== JSON.stringify(plot.choices)) { plot.choices = choices; plotView.reset(); }
     plotView.setStatus(plotStatus());
   };

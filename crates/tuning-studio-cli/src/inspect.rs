@@ -2,7 +2,7 @@
 
 use anyhow::{Result, anyhow, bail};
 use serde::Serialize;
-use studio_dwarf::tree::{NodeKind, Step, SymbolNode};
+use studio_dwarf::tree::{self, NodeKind, Step, SymbolNode};
 use studio_dwarf::{ElfInfo, VariableType};
 
 use crate::api::{self, Kind};
@@ -10,7 +10,7 @@ use crate::memory::Memory;
 use crate::path::{self, Location};
 use crate::value;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct Sample {
     path: String,
     #[serde(rename = "type")]
@@ -24,6 +24,12 @@ struct Sample {
     number: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    children: Vec<Sample>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    children_note: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -32,6 +38,11 @@ struct Inspection {
     values: Vec<Sample>,
 }
 
+const CHILD_LIMIT: usize = 64;
+const DEPTH_LIMIT: usize = 6;
+const NODE_LIMIT: usize = 256;
+const WATCH_REASON: &str = "watch! publishes a read-only snapshot; use watch_mut! with a mutable scalar at the task update point";
+
 /// Discover API values or sample the requested paths, preserving per-location errors.
 pub fn inspect(
     elf: Option<&ElfInfo>,
@@ -39,46 +50,100 @@ pub fn inspect(
     locations: &[String],
 ) -> Result<String> {
     memory.forget();
-    let selected = if locations.is_empty() {
+    let declarations = elf
+        .map(|elf| api::declared(elf, memory))
+        .unwrap_or_default();
+    let values = if locations.is_empty() {
         let elf = elf.ok_or_else(|| anyhow!("the session has no ELF to discover values"))?;
-        api::declared(elf, memory)
+        declarations
             .into_iter()
-            .map(|(_, node)| (node.path.clone(), Ok(Location::Node(Box::new(node)))))
+            .map(|(_, node)| {
+                let path = node.path.clone();
+                sample_location(Some(elf), memory, path, Ok(Location::Node(Box::new(node))))
+            })
             .collect::<Vec<_>>()
     } else {
         locations
             .iter()
-            .map(|text| (text.clone(), path::locate(elf, memory, text)))
+            .map(|text| {
+                let location = path::locate(elf, memory, text);
+                // An exact exported symbol wins over a logical field with the same name.
+                if matches!(&location, Ok(Location::Node(node)) if node.node.steps.is_empty()) {
+                    return sample_location(elf, memory, text.clone(), location);
+                }
+                // Logical watch fields omit mailbox storage (e.g. motor.state.speed).
+                // Read their owning snapshot once, rather than sampling its backing field.
+                if let Some((_, root)) = declarations
+                    .iter()
+                    .filter(|(kind, root)| {
+                        *kind == Kind::Watch
+                            && text.strip_prefix(&root.path).is_some_and(|suffix| {
+                                suffix.starts_with('.')
+                                    || suffix.starts_with('[')
+                                    || suffix.starts_with('#')
+                            })
+                    })
+                    .max_by_key(|(_, root)| root.path.len())
+                {
+                    let mut sample = sample_location(
+                        elf,
+                        memory,
+                        root.path.clone(),
+                        Ok(Location::Node(Box::new(root.clone()))),
+                    );
+                    if let Some(child) = sample.find(text) {
+                        return child.clone();
+                    }
+                    if sample.error.is_some() {
+                        sample.path.clone_from(text);
+                        return sample;
+                    }
+                }
+                sample_location(elf, memory, text.clone(), location)
+            })
             .collect()
     };
-    let values = selected
-        .into_iter()
-        .map(|(text, location)| {
-            let mut sample = Sample {
-                path: text,
-                type_name: String::new(),
-                kind: "raw",
-                writable: false,
-                display: String::new(),
-                write_reason: None,
-                number: None,
-                error: None,
-            };
-            let result = location.and_then(|location| sample.read(elf, memory, &location));
-            if let Err(error) = result {
-                sample.writable = false;
-                sample.write_reason = Some(format!("{error:#}"));
-                sample.error = Some(format!("{error:#}"));
-                sample.number = None;
-            }
-            memory.forget();
-            sample
-        })
-        .collect();
     Ok(serde_json::to_string(&Inspection { version: 1, values })? + "\n")
 }
 
+fn sample_location(
+    elf: Option<&ElfInfo>,
+    memory: &mut dyn Memory,
+    text: String,
+    location: Result<Location>,
+) -> Sample {
+    let mut sample = Sample {
+        path: text,
+        type_name: String::new(),
+        kind: "raw",
+        writable: false,
+        display: String::new(),
+        write_reason: None,
+        number: None,
+        error: None,
+        label: None,
+        children: Vec::new(),
+        children_note: None,
+    };
+    if let Err(error) = location.and_then(|location| sample.read(elf, memory, &location)) {
+        sample.writable = false;
+        sample.write_reason = Some(format!("{error:#}"));
+        sample.error = Some(format!("{error:#}"));
+        sample.number = None;
+        sample.children.clear();
+    }
+    memory.forget();
+    sample
+}
+
 impl Sample {
+    fn find(&self, path: &str) -> Option<&Self> {
+        if self.path == path {
+            return Some(self);
+        }
+        self.children.iter().find_map(|child| child.find(path))
+    }
+
     fn read(
         &mut self,
         elf: Option<&ElfInfo>,
@@ -106,7 +171,7 @@ impl Sample {
                         };
                         self.writable = kind != Kind::Watch;
                         if kind == Kind::Watch {
-                            self.write_reason = Some("watch! publishes a read-only snapshot; use watch_mut! with a mutable scalar at the task update point".into());
+                            self.write_reason = Some(WATCH_REASON.into());
                         }
                         let value = api::traced_value(elf, memory, node)?.0;
                         self.type_name = value.type_name.clone();
@@ -128,6 +193,8 @@ impl Sample {
                             }
                         }
                         self.number = node_number(memory, &value)?;
+                        let mut remaining = NODE_LIMIT;
+                        self.expand(elf, memory, &value, 0, &mut remaining)?;
                     }
                     None => {
                         self.write_reason = write_restriction(elf, memory, node)?;
@@ -140,11 +207,122 @@ impl Sample {
                         }
                         self.display = value::render(elf, memory, node)?;
                         self.number = node_number(memory, node)?;
+                        let mut remaining = NODE_LIMIT;
+                        self.expand(elf, memory, node, 0, &mut remaining)?;
                     }
                 }
             }
         }
         self.display = self.display.trim_end().to_owned();
+        Ok(())
+    }
+
+    /// Descendants use the parent's snapshot. Never follow pointers or slices here:
+    /// their pointees are outside the bytes validated by a watch's counters.
+    fn expand(
+        &mut self,
+        elf: &ElfInfo,
+        memory: &mut dyn Memory,
+        node: &SymbolNode,
+        depth: usize,
+        remaining: &mut usize,
+    ) -> Result<()> {
+        if !node.expandable || node.kind == NodeKind::Pointer || node.sequence {
+            return Ok(());
+        }
+        if depth == DEPTH_LIMIT || *remaining == 0 {
+            self.children_note = Some("More fields omitted: inspection limit".into());
+            return Ok(());
+        }
+        let active = if node.kind == NodeKind::TaggedEnum {
+            tree::preview(elf, &node.node, &mut |address, len| {
+                memory.read(address, len).map_err(|e| format!("{e:#}"))
+            })
+            .map_err(|e| anyhow!("{e}"))?
+            .and_then(|p| p.active_variant)
+        } else {
+            None
+        };
+        let page = tree::children_page(
+            elf,
+            &node.node,
+            0,
+            CHILD_LIMIT,
+            &mut |address, len| memory.word(address, len).map_err(|e| format!("{e:#}")),
+            true,
+        )
+        .map_err(|e| anyhow!("{e}"))?;
+        let shown = page.nodes.len();
+        for child in page.nodes {
+            if matches!(child.node.steps.last(), Some(Step::Discriminant)) {
+                continue;
+            }
+            if let Some(Step::Variant(name)) = child.node.steps.last()
+                && active.as_ref() != Some(name)
+            {
+                continue;
+            }
+            if *remaining == 0 {
+                self.children_note = Some("More fields omitted: inspection limit".into());
+                break;
+            }
+            *remaining -= 1;
+            let suffix = child
+                .path
+                .strip_prefix(&node.path)
+                .ok_or_else(|| anyhow!("child path is outside its parent"))?;
+            let path = format!("{}{suffix}", self.path);
+            let mut sample = Sample {
+                path,
+                type_name: child.type_name.clone(),
+                kind: self.kind,
+                writable: false,
+                display: String::new(),
+                write_reason: None,
+                number: None,
+                error: None,
+                label: Some(child.label.clone()),
+                children: Vec::new(),
+                children_note: None,
+            };
+            let read = (|| -> Result<()> {
+                if !child.readable {
+                    bail!("{}", child.status.as_deref().unwrap_or("not readable"));
+                }
+                if child.bit_size.is_some() {
+                    bail!("bitfields are not supported yet");
+                }
+                sample.write_reason = if self.kind == "watch" {
+                    Some(WATCH_REASON.into())
+                } else {
+                    write_restriction(elf, memory, &child)?
+                };
+                sample.writable = sample.write_reason.is_none();
+                sample.display = if child.sequence {
+                    format!("{}: {}", sample.path, sample.type_name)
+                } else {
+                    value::render_snapshot(elf, memory, &child, &sample.path)
+                        .lines()
+                        .next()
+                        .unwrap_or_default()
+                        .to_owned()
+                };
+                sample.number = node_number(memory, &child)?;
+                sample.expand(elf, memory, &child, depth + 1, remaining)?;
+                Ok(())
+            })();
+            if let Err(error) = read {
+                sample.writable = false;
+                sample.number = None;
+                sample.error = Some(format!("{error:#}"));
+                sample.write_reason.clone_from(&sample.error);
+                sample.children.clear();
+            }
+            self.children.push(sample);
+        }
+        if page.total > shown as u64 {
+            self.children_note = Some(format!("First {shown} of {} fields", page.total));
+        }
         Ok(())
     }
 }
@@ -314,6 +492,208 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("changed")
+        );
+    }
+
+    fn snapshot(elf: &ElfInfo, memory: &mut Fake) -> SymbolNode {
+        let Location::Node(node) = path::locate(Some(elf), memory, "motor.state").unwrap() else {
+            panic!("expected a node");
+        };
+        for name in ["end", "start"] {
+            let counter = api::field(elf, memory, &node, name).unwrap();
+            memory.write(counter.address, &1u32.to_le_bytes()).unwrap();
+        }
+        *node
+    }
+
+    #[test]
+    fn nested_watch_fields_share_the_validated_snapshot_and_stay_read_only() {
+        struct Changing {
+            memory: Fake,
+            trigger: u64,
+            speed: u64,
+            changed: bool,
+        }
+        impl Memory for Changing {
+            fn transfer(&mut self, address: u64, len: usize) -> Result<Vec<u8>> {
+                let bytes = self.memory.transfer(address, len)?;
+                if address == self.trigger && !self.changed {
+                    self.memory.write(self.speed, &99f32.to_le_bytes())?;
+                    self.changed = true;
+                }
+                Ok(bytes)
+            }
+            fn write(&mut self, address: u64, data: &[u8]) -> Result<()> {
+                self.memory.write(address, data)
+            }
+            fn snapshots(&mut self) -> &mut crate::memory::Snapshots {
+                self.memory.snapshots()
+            }
+            fn ram(&self) -> &[std::ops::Range<u64>] {
+                self.memory.ram()
+            }
+        }
+        let elf = ElfParser::parse(ELF).unwrap();
+        let mut memory = Fake::from_elf(ELF);
+        let root = snapshot(&elf, &mut memory);
+        let value = api::field(&elf, &mut memory, &root, "value").unwrap();
+        let speed = path::describe(
+            &elf,
+            &mut memory,
+            &value.node.child(Step::Member("speed".into())),
+        )
+        .unwrap();
+        memory.write(speed.address, &7f32.to_le_bytes()).unwrap();
+        let end = api::field(&elf, &mut memory, &root, "end").unwrap();
+        let mut memory = Changing {
+            memory,
+            trigger: end.address,
+            speed: speed.address,
+            changed: false,
+        };
+        let sample = sample_location(
+            Some(&elf),
+            &mut memory,
+            root.path.clone(),
+            Ok(Location::Node(Box::new(root))),
+        );
+        assert!(memory.changed);
+        assert_eq!(sample.find("motor.state.speed").unwrap().number, Some(7.0));
+        let integral = sample.find("motor.state.pi.integral").unwrap();
+        assert_eq!(integral.label.as_deref(), Some("integral"));
+        assert_eq!(integral.number, Some(0.0));
+        assert_eq!(integral.kind, "watch");
+        assert!(!integral.writable);
+        assert!(
+            integral
+                .write_reason
+                .as_deref()
+                .unwrap()
+                .contains("read-only snapshot")
+        );
+        assert!(sample.find("motor.state.driver").is_none());
+        assert_eq!(
+            memory.memory.word(speed.address, 4).unwrap(),
+            u64::from(99f32.to_bits())
+        );
+    }
+
+    #[test]
+    fn logical_watch_field_requests_validate_the_parent_counters() {
+        let elf = ElfParser::parse(ELF).unwrap();
+        let mut memory = Fake::from_elf(ELF);
+        let root = snapshot(&elf, &mut memory);
+        let paths = ["motor.state.pi.integral".into()];
+        let sample: serde_json::Value =
+            serde_json::from_str(&inspect(Some(&elf), &mut memory, &paths).unwrap()).unwrap();
+        assert_eq!(sample["values"][0]["path"], "motor.state.pi.integral");
+        assert_eq!(sample["values"][0]["number"], 0.0);
+        assert_eq!(sample["values"][0]["writable"], false);
+        let counter = api::field(&elf, &mut memory, &root, "start").unwrap();
+        memory.write(counter.address, &2u32.to_le_bytes()).unwrap();
+        let sample: serde_json::Value =
+            serde_json::from_str(&inspect(Some(&elf), &mut memory, &paths).unwrap()).unwrap();
+        assert!(sample["values"][0].get("number").is_none());
+        assert!(sample["values"][0].get("children").is_none());
+        assert!(
+            sample["values"][0]["error"]
+                .as_str()
+                .unwrap()
+                .contains("changed")
+        );
+    }
+
+    #[test]
+    fn raw_structs_arrays_and_active_variants_have_typed_children() {
+        const TYPES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/type_lab.elf");
+        let elf = ElfParser::parse(TYPES).unwrap();
+        let mut memory = Fake::from_elf(TYPES);
+        let paths = [
+            "type_lab::aggregates::ROBOT",
+            "type_lab::aggregates::LARGE",
+            "type_lab::aggregates::TABLE",
+            "type_lab::enums::COMMAND",
+        ]
+        .map(String::from);
+        let text = inspect(Some(&elf), &mut memory, &paths).unwrap();
+        let result: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let robot = &result["values"][0];
+        assert!(robot.get("error").is_none(), "{text}");
+        let axes = robot["children"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["label"] == "axes")
+            .unwrap();
+        let position = axes["children"][0]["children"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["label"] == "position")
+            .unwrap();
+        assert_eq!(position["number"], 0.5);
+        assert_eq!(position["writable"], true);
+        assert_eq!(
+            position["path"],
+            "type_lab::aggregates::ROBOT.axes[0].position"
+        );
+        assert_eq!(
+            result["values"][1]["children"].as_array().unwrap().len(),
+            CHILD_LIMIT
+        );
+        assert_eq!(
+            result["values"][1]["children_note"],
+            "First 64 of 300 fields"
+        );
+        assert_eq!(result["values"][2]["children"][0]["writable"], false);
+        let variants = result["values"][3]["children"].as_array().unwrap();
+        assert_eq!(
+            variants.len(),
+            1,
+            "only the active payload is exposed: {text}"
+        );
+        assert_eq!(variants[0]["label"], "Position");
+    }
+
+    #[test]
+    fn references_and_pointers_need_explicit_dereferencing() {
+        const TYPES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/type_lab.elf");
+        let elf = ElfParser::parse(TYPES).unwrap();
+        let mut memory = Fake::from_elf(TYPES);
+        let paths = [
+            "type_lab::pointers::TO_U32",
+            "type_lab::pointers::TO_U32.*",
+            "type_lab::pointers::REFERENCE.*",
+            "type_lab::pointers::TO_ARRAY.*",
+            "type_lab::pointers::NULL.*",
+        ]
+        .map(String::from);
+        let text = inspect(Some(&elf), &mut memory, &paths).unwrap();
+        let result: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let values = result["values"].as_array().unwrap();
+        assert!(
+            values[0].get("children").is_none(),
+            "pointer rows do not auto-follow"
+        );
+        assert!(
+            values[0].get("number").is_none(),
+            "pointer addresses are not plot samples"
+        );
+        assert_eq!(
+            values[1]["number"].as_f64(),
+            Some(f64::from(0xdead_beefu32))
+        );
+        assert_eq!(values[2]["number"].as_f64(), Some(3.0));
+        assert_eq!(
+            values[2]["kind"], "raw",
+            "dereferencing remains a debugger memory operation"
+        );
+        assert_eq!(values[3]["children"].as_array().unwrap().len(), CHILD_LIMIT);
+        assert!(
+            values[4]["error"]
+                .as_str()
+                .unwrap()
+                .contains("null pointer")
         );
     }
 }

@@ -24,6 +24,7 @@ export interface TasksOutput {
   samplesLine?: string;
   samples?: number;
   seconds?: number;
+  perSecond?: number;
   /** Lines the parser did not recognize, such as a note about PC sampling. */
   other: string[];
 }
@@ -51,6 +52,8 @@ export function parseTasksOutput(text: string): TasksOutput {
       out.samplesLine = line;
       out.samples = Number(samples[1]);
       out.seconds = Number(samples[2]);
+      const rate = /, ([\d.]+) per second\b/.exec(line);
+      if (rate) out.perSecond = Number(rate[1]);
       current = undefined;
       continue;
     }
@@ -80,4 +83,15 @@ export function parseTasksOutput(text: string): TasksOutput {
     current = undefined;
   }
   return out;
+}
+
+/** Compact metadata for the Tasks view; retain the original line for raw output. */
+export function taskSampleSummary(output: TasksOutput): string {
+  const parts: string[] = [];
+  if (output.samples !== undefined) parts.push(`${output.samples} ${output.samples === 1 ? 'sample' : 'samples'}`);
+  if (output.seconds !== undefined) parts.push(output.seconds < 1
+    ? `${Math.round(output.seconds * 1000)} ms`
+    : `${output.seconds} s`);
+  if (output.perSecond !== undefined) parts.push(`${output.perSecond}/s`);
+  return parts.join(' · ') || 'Captured';
 }

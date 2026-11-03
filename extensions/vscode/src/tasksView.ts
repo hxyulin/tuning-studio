@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { TaskReport, TaskState, TasksOutput } from './tasksOutput';
+import { TaskReport, TaskState, TasksOutput, taskSampleSummary } from './tasksOutput';
 
 type TaskNode =
   | { type: 'task'; task: TaskReport }
@@ -29,15 +29,11 @@ export class TasksTree implements vscode.TreeDataProvider<TaskNode> {
 
   message(): string | undefined {
     if (this.sampling !== undefined) {
-      return `Sampling for ${this.sampling} ms`;
+      return `Sampling · ${this.sampling} ms`;
     }
-    const taken = this.sample
-      ? `Sample from ${this.sample.at.toLocaleTimeString()}${
-          this.sample.output.samplesLine ? `: ${this.sample.output.samplesLine}` : ''
-        }`
-      : undefined;
+    const taken = this.sample ? taskSampleSummary(this.sample.output) : undefined;
     if (this.error) {
-      return taken ? `Sampling failed: ${this.error}. ${taken}` : `Sampling failed: ${this.error}`;
+      return taken ? `Sample failed: ${this.error} · Previous: ${taken}` : `Sample failed: ${this.error}`;
     }
     return taken;
   }
@@ -84,6 +80,7 @@ export class TasksTree implements vscode.TreeDataProvider<TaskNode> {
             `**${task.name}**`,
             task.running ? `- running: ${task.running} of PC samples inside its poll` : '',
             task.runQueued ? `- run-queued: ${task.runQueued} of samples waiting to be polled` : '',
+            this.sample ? `\nCaptured ${this.sample.at.toLocaleString()}` : '',
           ]
             .filter((l) => l !== '')
             .join('\n'),

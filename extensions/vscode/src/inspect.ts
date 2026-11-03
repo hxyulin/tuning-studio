@@ -11,6 +11,9 @@ export interface InspectValue {
   number?: number;
   error?: string;
   writeReason?: string;
+  label?: string;
+  children?: InspectValue[];
+  childrenNote?: string;
 }
 
 export interface InspectResult {
@@ -37,14 +40,17 @@ export function parseInspect(stdout: string): InspectResult {
   if (!Array.isArray(json.values)) {
     throw new Error('inspect output has no values array');
   }
-  const values = json.values.map((entry: unknown, i: number): InspectValue => {
+  let count = 0;
+  const parseValue = (entry: unknown, i: number, depth: number, parent?: InspectValue): InspectValue => {
+    if (depth > 8 || ++count > 10000) throw new Error('inspect tree exceeds its size limit');
     if (!isObject(entry)) {
       throw new Error(`inspect value ${i} is not an object`);
     }
-    const { path, type, kind, writable, display, number, error, write_reason } = entry;
+    const { path, type, kind, writable, display, number, error, write_reason, label, children, children_note } = entry;
     if (typeof path !== 'string' || path === '') {
       throw new Error(`inspect value ${i} has no path`);
     }
+    if (parent && !isDescendant(path, parent.path)) throw new Error(`inspect child ${path} is outside ${parent.path}`);
     if (typeof type !== 'string') {
       throw new Error(`inspect value ${path} has no type`);
     }
@@ -68,9 +74,40 @@ export function parseInspect(stdout: string): InspectResult {
       value.error = error;
     }
     if (typeof write_reason === 'string') value.writeReason = write_reason;
+    if (label !== undefined && typeof label !== 'string') throw new Error(`inspect value ${path} has an invalid label`);
+    if (children_note !== undefined && typeof children_note !== 'string') throw new Error(`inspect value ${path} has an invalid children note`);
+    if (typeof label === 'string') value.label = label;
+    if (typeof children_note === 'string') value.childrenNote = children_note;
+    if (parent?.error) {
+      value.error = parent.error; value.number = undefined; value.writable = false;
+    }
+    if (parent?.kind === 'watch') {
+      value.kind = 'watch'; value.writable = false;
+      value.writeReason = parent.writeReason ?? 'watch! publishes a read-only snapshot.';
+    }
+    if (children !== undefined) {
+      if (!Array.isArray(children)) throw new Error(`inspect value ${path} has invalid children`);
+      const paths = new Set<string>();
+      value.children = children.map((child, index) => {
+        const parsed = parseValue(child, index, depth + 1, value);
+        if (paths.has(parsed.path)) throw new Error(`inspect value ${path} has duplicate children`);
+        paths.add(parsed.path); return parsed;
+      });
+    }
     return value;
-  });
+  };
+  const values = json.values.map((entry, i) => parseValue(entry, i, 0));
   return { version: 1, values };
+}
+
+/** Inspection paths use member, array and enum-variant suffixes. */
+export function isDescendant(path: string, parent: string): boolean {
+  return path.startsWith(parent + '.') || path.startsWith(parent + '[') || path.startsWith(parent + '#');
+}
+
+/** All values, including children of collapsed rows, in display order. */
+export function flattenValues(values: readonly InspectValue[]): InspectValue[] {
+  return values.flatMap(value => [value, ...flattenValues(value.children ?? [])]);
 }
 
 /**

@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { Cli, CliResult } from './cli';
 import { inspectArgs } from './cliText';
-import { InspectValue, matchLocations, parseInspect } from './inspect';
+import { InspectValue, flattenValues, matchLocations, parseInspect } from './inspect';
 import { SessionController } from './session';
 import { pollInterval, probe } from './settings';
 
@@ -107,12 +107,12 @@ export class LiveWatch implements vscode.Disposable {
   /** The latest value read for a path, from either group. */
   lookup(path: string): InspectValue | undefined {
     for (const values of this.watchedValues.values()) {
-      const found = values.find((v) => v.path === path);
+      const found = flattenValues(values).find((v) => v.path === path);
       if (found) {
         return found;
       }
     }
-    return this.declared.find((v) => v.path === path);
+    return flattenValues(this.declared).find((v) => v.path === path);
   }
 
   /** Start or stop polling to match `active`, keeping a poll already scheduled. */
@@ -187,7 +187,7 @@ export class LiveWatch implements vscode.Disposable {
       this.running = false;
     }
     const numbers = new Map<string, number>();
-    for (const value of fresh) {
+    for (const value of flattenValues(fresh)) {
       if (value.number !== undefined && value.error === undefined) {
         numbers.set(value.path, value.number);
       }

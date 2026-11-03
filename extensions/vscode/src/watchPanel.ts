@@ -27,7 +27,7 @@ export class WatchPanel implements vscode.WebviewViewProvider, vscode.Disposable
     view.webview.options = { enableScripts: true, localResourceRoots: [media] };
     const nonce = randomBytes(16).toString('base64');
     const asset = (file: string) => view.webview.asWebviewUri(vscode.Uri.joinPath(media, file));
-    view.webview.html = `<!doctype html><html><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${view.webview.cspSource}; script-src 'nonce-${nonce}'"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="${asset('watch.css')}"></head><body><p id="status" role="status" hidden></p><div id="values" role="list" aria-label="Live values"></div><p id="empty" hidden>No values yet. Run firmware, or add a symbol or address:type below.</p><form id="add"><input id="location" aria-label="Add watch: symbol path or address:type" placeholder="Add watch: symbol or address:type" spellcheck="false" autocomplete="off"></form><div id="announce" class="sr-only" aria-live="polite"></div><script nonce="${nonce}" src="${asset('watch.js')}"></script></body></html>`;
+    view.webview.html = `<!doctype html><html><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${view.webview.cspSource}; script-src 'nonce-${nonce}'"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="${asset('watch.css')}"></head><body><p id="status" role="status" hidden></p><div id="values" role="tree" aria-label="Live values"></div><p id="empty" hidden>No values yet. Run firmware, or add a symbol or address:type below.</p><form id="add"><input id="location" aria-label="Add watch: symbol path or address:type" placeholder="Add watch: symbol or address:type" spellcheck="false" autocomplete="off"></form><div id="announce" class="sr-only" aria-live="polite"></div><script nonce="${nonce}" src="${asset('watch.js')}"></script></body></html>`;
     this.disposables.push(view.onDidChangeVisibility(() => { this.refresh(); this.changed.fire(); }), view.onDidDispose(() => { this.view = undefined; this.changed.fire(); }), view.webview.onDidReceiveMessage(async (raw: unknown) => {
       if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return;
       const m = raw as Record<string, unknown>;
@@ -63,7 +63,8 @@ export class WatchPanel implements vscode.WebviewViewProvider, vscode.Disposable
     this.message = message;
     const values = [...this.watch.declared, ...this.watch.watchedValues.values()].flat();
     const unique = [...new Map(values.map(v => [v.path, v])).values()];
-    void this.view?.webview.postMessage({ type: 'values', message, values: unique.map(v => ({ ...v, reason: editReason(v) })), watches: this.watch.watched, errors: this.watch.watched.map(path => ({ path, error: this.watch.watchedError ?? (this.watch.watchedValues.get(path)?.length ? '' : 'Waiting for a value') })) });
+    const present = (v: InspectValue): unknown => ({ ...v, reason: editReason(v), children: v.children?.map(present) });
+    void this.view?.webview.postMessage({ type: 'values', message, values: unique.map(present), watches: this.watch.watched, errors: this.watch.watched.map(path => ({ path, error: this.watch.watchedError ?? (this.watch.watchedValues.get(path)?.length ? '' : 'Waiting for a value') })) });
   }
   focus(path: string): void { void this.view?.webview.postMessage({ type: 'edit', path }); }
   dispose(): void { this.disposables.forEach(d => d.dispose()); }

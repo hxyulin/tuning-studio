@@ -9,10 +9,10 @@ import {
   statusArgs,
   tasksArgs,
 } from '../cliText';
-import { matchLocations, parseInspect, singleLine } from '../inspect';
+import { matchLocations, parseInspect, flattenValues, singleLine } from '../inspect';
 import { parseWebviewMessage } from '../messages';
 import { Series } from '../series';
-import { parseTasksOutput } from '../tasksOutput';
+import { parseTasksOutput, taskSampleSummary } from '../tasksOutput';
 
 test('arguments never carry --chip or --elf, and pass --probe when set', () => {
   assert.deepEqual(inspectArgs(''), ['inspect']);
@@ -200,4 +200,34 @@ test('edit restrictions survive inspect parsing and layout messages reject unsup
   assert.equal(parseWebviewMessage({ type: 'layout', action: 'execute', id: 'a', path: '', text: '' }), undefined);
   assert.equal(parseWebviewMessage({ type: 'layout', action: 'add', id: 'a', path: '', text: '', extra: true }), undefined);
   assert.equal(parseWebviewMessage({ type: 'layout', action: 'seriesAdd', id: 'a', path: 'speed', text: '' })?.type, 'layout');
+});
+
+test('task sample summaries use short phrases and retain the CLI sample rate', () => {
+  const output = parseTasksOutput('83 samples in 0.20 s, 414 per second');
+  assert.equal(taskSampleSummary(output), '83 samples · 200 ms · 414/s');
+  assert.equal(output.samplesLine, '83 samples in 0.20 s, 414 per second');
+  assert.equal(taskSampleSummary(parseTasksOutput('1 sample in 1.50 s, 1 per second')), '1 sample · 1.5 s · 1/s');
+  assert.equal(taskSampleSummary(parseTasksOutput('0 samples in 0.00 s')), '0 samples · 0 ms');
+  assert.equal(taskSampleSummary(parseTasksOutput('')), 'Captured');
+});
+
+
+test('inspection trees retain numeric descendants and validate child paths', () => {
+  const child = { path: 'motor.state.speed', label: 'speed', type: 'f32', kind: 'raw', writable: true, display: 'speed = 12.5', number: 12.5 };
+  const root = { path: 'motor.state', type: 'MotorSnapshot', kind: 'watch', writable: false, display: 'motor.state: MotorSnapshot', children: [child], children_note: 'First 64 fields' };
+  const values = parseInspect(JSON.stringify({ version: 1, values: [root] })).values;
+  const leaves = flattenValues(values);
+  assert.equal(leaves.length, 2);
+  assert.equal(leaves[1].number, 12.5);
+  assert.equal(leaves[1].writable, false, 'snapshot descendants cannot become writable');
+  assert.equal(leaves[1].kind, 'watch');
+  assert.equal(values[0].childrenNote, 'First 64 fields');
+  const failed = flattenValues(parseInspect(JSON.stringify({ version: 1, values: [{ ...root, error: 'changed during read' }] })).values);
+  assert.equal(failed[1].number, undefined, 'a failed parent cannot leak numeric child samples');
+  assert.equal(failed[1].error, 'changed during read');
+  assert.throws(() => parseInspect(JSON.stringify({ version: 1, values: [{ ...root, children: [{ ...child, path: 'other.speed' }] }] })), /outside/);
+  assert.throws(() => parseInspect(JSON.stringify({ version: 1, values: [{ ...root, children: [child, child] }] })), /duplicate/);
+  assert.throws(() => parseInspect(JSON.stringify({ version: 1, values: [{ ...root, children: 'bad' }] })), /invalid children/);
+  assert.equal(flattenValues(parseInspect(JSON.stringify({ version: 1, values: [setScalar()] })).values).length, 1, 'older CLI output still works');
+  function setScalar() { return { path: 'x', type: 'f32', kind: 'param', writable: true, display: '1', number: 1 }; }
 });

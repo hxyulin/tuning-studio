@@ -14,9 +14,10 @@
 
   /**
    * @typedef {{ text: string, full: string, reason: string, error: string, writable: boolean,
-   *   suggest: boolean, number: number | undefined, watch: string | undefined }} Info
+   *   suggest: boolean, number: number | undefined, watch: string | undefined, depth: number, parent: string | undefined,
+   *   label: string | undefined, expandable: boolean }} Info
    * @typedef {{ path: string, item: HTMLElement, row: HTMLElement, value: HTMLElement,
-   *   more: HTMLButtonElement, detail: HTMLElement, message: HTMLElement,
+   *   more: HTMLButtonElement, toggle: HTMLButtonElement, name: HTMLElement, detail: HTMLElement, message: HTMLElement,
    *   input: HTMLInputElement | undefined, info: Info, pending: boolean, settling: boolean,
    *   writeError: string, showDetail: boolean }} Row
    */
@@ -24,6 +25,11 @@
   const rows = new Map();
   /** @type {string[]} */
   let order = [];
+  /** @type {string[]} */
+  let mounted = [];
+  const saved = host.getState?.();
+  /** @type {Set<string>} */
+  const expanded = new Set(Array.isArray(saved?.expanded) ? saved.expanded.filter(p => typeof p === 'string').slice(0, 1000) : []);
   /** @type {string | undefined} */
   let active;
   /** @type {{ element: HTMLElement, row: Row } | undefined} */
@@ -65,9 +71,11 @@
   /** @param {string} path @returns {Row} */
   function makeRow(path) {
     const item = el('div', 'item');
-    item.setAttribute('role', 'listitem');
+    item.setAttribute('role', 'treeitem');
     item.tabIndex = -1;
     const row = el('div', 'row');
+    const toggle = /** @type {HTMLButtonElement} */ (el('button', 'toggle'));
+    toggle.type = 'button'; toggle.tabIndex = -1;
     const name = el('span', 'name');
     const [prefix, leaf] = nameParts(path);
     name.append(el('span', 'prefix', prefix), el('span', 'leaf', leaf));
@@ -78,7 +86,7 @@
     more.tabIndex = -1;
     more.setAttribute('aria-haspopup', 'menu');
     more.setAttribute('aria-label', `Actions for ${path}`);
-    row.append(name, value, more);
+    row.append(toggle, name, value, more);
     const message = el('div', 'message');
     message.hidden = true;
     const detail = el('div', 'detail');
@@ -88,10 +96,12 @@
     item.append(row, message, detail);
     /** @type {Row} */
     const r = {
-      path, item, row, value, more, detail, message, input: undefined, pending: false, settling: false, writeError: '', showDetail: false,
-      info: { text: '', full: '', reason: '', error: '', writable: false, suggest: false, number: undefined, watch: undefined },
+      path, item, row, value, more, toggle, name, detail, message, input: undefined, pending: false, settling: false, writeError: '', showDetail: false,
+      info: { text: '', full: '', reason: '', error: '', writable: false, suggest: false, number: undefined, watch: undefined, depth: 0, parent: undefined, label: undefined, expandable: false },
     };
     value.addEventListener('click', () => startEdit(r));
+    toggle.addEventListener('click', event => { event.stopPropagation(); toggleExpanded(r); });
+    name.addEventListener('click', () => { if (r.info.expandable) toggleExpanded(r); });
     more.addEventListener('click', event => { event.stopPropagation(); openMenu(r); });
     row.addEventListener('mousedown', () => { active = path; });
     item.addEventListener('focus', () => { active = path; updateTabStops(); });
@@ -110,6 +120,15 @@
   function render(r) {
     const { info } = r;
     r.value.textContent = info.text;
+    const [prefix, leaf] = info.depth > 0 ? ['', info.label ?? nameParts(r.path)[1]] : nameParts(r.path);
+    r.name.replaceChildren(el('span', 'prefix', prefix), el('span', 'leaf', leaf));
+    r.item.style.paddingLeft = `${info.depth * 12}px`;
+    r.item.setAttribute('aria-level', String(info.depth + 1));
+    r.toggle.style.visibility = info.expandable ? 'visible' : 'hidden';
+    r.toggle.textContent = expanded.has(r.path) ? '⌄' : '›';
+    r.toggle.setAttribute('aria-label', `${expanded.has(r.path) ? 'Collapse' : 'Expand'} ${r.path}`);
+    if (info.expandable) r.item.setAttribute('aria-expanded', String(expanded.has(r.path)));
+    else r.item.removeAttribute('aria-expanded');
     const failed = r.writeError ? `\nLast write failed: ${r.writeError}` : '';
     r.row.title = `${r.path}\n${info.full}${info.reason ? '\n' + info.reason : ''}${failed}`;
     r.item.classList.toggle('readonly', !info.writable && !info.error);
@@ -218,10 +237,19 @@
     if (event.target !== r.item) return;
     const mod = event.metaKey || event.ctrlKey;
     let handled = true;
-    if (event.key === 'ArrowDown') move(r, 1);
+    if (event.key === 'ArrowRight') {
+      if (r.info.expandable && !expanded.has(r.path)) toggleExpanded(r);
+      else if (r.info.expandable) move(r, 1);
+    }
+    else if (event.key === 'ArrowLeft') {
+      if (r.info.expandable && expanded.has(r.path)) toggleExpanded(r);
+      else if (r.info.parent) rows.get(r.info.parent)?.item.focus();
+    }
+    else if (event.key === 'ArrowDown') move(r, 1);
     else if (event.key === 'ArrowUp') move(r, -1);
     else if (event.key === 'Home') move(r, -Infinity);
     else if (event.key === 'End') move(r, Infinity);
+    else if (event.key === 'Enter' && r.info.expandable) toggleExpanded(r);
     else if (event.key === 'Enter' || event.key === 'F2') startEdit(r);
     else if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) openMenu(r);
     else if (event.key === 'Escape' && r.showDetail) toggleDetail(r);
@@ -229,6 +257,33 @@
     else if (mod && event.key.toLowerCase() === 'c') send('copy', r.path, 'value');
     else handled = false;
     if (handled) event.preventDefault();
+  }
+
+  /** @param {Row} r */
+  function toggleExpanded(r) {
+    if (!r.info.expandable) return;
+    if (expanded.has(r.path)) expanded.delete(r.path); else expanded.add(r.path);
+    host.setState?.({ expanded: [...expanded].slice(0, 1000) });
+    render(r);
+    updateVisibility();
+    r.item.focus();
+  }
+
+  function updateVisibility() {
+    const visible = new Set();
+    for (const path of mounted) {
+      const r = rows.get(path);
+      if (!r) continue;
+      const parent = r.info.parent;
+      r.item.hidden = !!parent && (!visible.has(parent) || !expanded.has(parent));
+      if (!r.item.hidden) visible.add(path);
+      else {
+        if (r.input && !r.pending) closeEditor(r, false);
+        if (menu?.row === r) closeMenu(false);
+      }
+    }
+    order = [...visible];
+    updateTabStops();
   }
 
   /** @param {Row} r */
@@ -348,7 +403,7 @@
   }
 
   function updateTabStops() {
-    if (active === undefined || !rows.has(active)) active = order[0];
+    if (active === undefined || !order.includes(active)) active = order[0];
     for (const [path, r] of rows) r.item.tabIndex = path === active ? 0 : -1;
   }
 
@@ -360,23 +415,29 @@
     const watches = m.watches.filter(w => typeof w === 'string');
     /** @type {Map<string, Info>} */
     const next = new Map();
-    for (const value of m.values) {
-      if (!value || typeof value.path !== 'string' || next.has(value.path)) continue;
+    const visit = (value, depth = 0, parent = undefined) => {
+      if (!value || typeof value.path !== 'string' || next.has(value.path) || depth > 8) return;
       const error = typeof value.error === 'string' ? value.error : '';
+      const children = !error && Array.isArray(value.children) ? value.children : [];
+      const note = typeof value.childrenNote === 'string' ? value.childrenNote : '';
       next.set(value.path, {
         text: shortValue(value),
-        full: String(value.display ?? ''),
+        full: String(value.display ?? '') + (note ? '\n' + note : ''),
         reason: typeof value.reason === 'string' && value.reason !== error ? value.reason : '',
         error,
         writable: value.writable === true && !error,
-        suggest: value.writable !== true && !error,
+        suggest: value.writable !== true && !error && !children.length,
         number: typeof value.number === 'number' ? value.number : undefined,
         watch: watchOf(value.path, watches),
+        depth, parent, label: typeof value.label === 'string' ? value.label : undefined,
+        expandable: children.length > 0,
       });
-    }
+      for (const child of children) visit(child, depth + 1, value.path);
+    };
+    for (const value of m.values) visit(value);
     for (const entry of m.errors) {
       if (!entry || typeof entry.path !== 'string' || !entry.error || next.has(entry.path)) continue;
-      next.set(entry.path, { text: entry.error, full: '', reason: '', error: entry.error, writable: false, suggest: false, number: undefined, watch: entry.path });
+      next.set(entry.path, { text: entry.error, full: '', reason: '', error: entry.error, writable: false, suggest: false, number: undefined, watch: entry.path, depth: 0, parent: undefined, label: undefined, expandable: false });
     }
     for (const [path, r] of rows) {
       if (next.has(path)) continue;
@@ -385,7 +446,7 @@
       rows.delete(path);
     }
     const paths = [...next.keys()];
-    const reorder = paths.length !== order.length || paths.some((p, i) => p !== order[i]);
+    const reorder = paths.length !== mounted.length || paths.some((p, i) => p !== mounted[i]);
     for (const [path, info] of next) {
       const r = rows.get(path) ?? makeRow(path);
       // A poll after a successful write shows the value read back.
@@ -400,9 +461,9 @@
       for (const path of paths) list.append(/** @type {Row} */ (rows.get(path)).item);
       if (focused && focused !== document.activeElement) /** @type {HTMLElement} */ (focused).focus();
     }
-    order = paths;
-    empty.hidden = order.length > 0;
-    updateTabStops();
+    mounted = paths;
+    empty.hidden = mounted.length > 0;
+    updateVisibility();
   }
 
   window.addEventListener('message', event => {

@@ -35,6 +35,7 @@ class FakeElement {
   get textContent(): string { return this.text + this.children.map(c => c.textContent).join(''); }
   set textContent(value: string) { this.text = value; this.children.forEach(c => { c.parent = undefined; }); this.children = []; }
   append(...nodes: FakeElement[]) { for (const node of nodes) { node.remove(); node.parent = this; this.children.push(node); } }
+  replaceChildren(...nodes: FakeElement[]) { this.children.forEach(c => { c.parent = undefined; }); this.children = []; this.append(...nodes); }
   insertBefore(node: FakeElement, ref: FakeElement) { node.remove(); node.parent = this; this.children.splice(this.children.indexOf(ref), 0, node); }
   remove() { if (this.parent) { this.parent.children = this.parent.children.filter(c => c !== this); this.parent = undefined; } }
   contains(node: FakeElement | undefined): boolean { for (let n = node; n; n = n.parent) if (n === this) return true; return false; }
@@ -77,7 +78,8 @@ class FakeDocument {
   }
 }
 
-function loadWebview() {
+function loadWebview(initialState: Record<string, unknown> = {}) {
+  let savedState = initialState;
   const doc = new FakeDocument();
   for (const [tag, id] of [['p', 'status'], ['div', 'values'], ['p', 'empty'], ['form', 'add'], ['div', 'announce']]) {
     const element = doc.createElement(tag); element.id = id; doc.body.append(element);
@@ -90,13 +92,13 @@ function loadWebview() {
     addEventListener: (type: string, listener: Listener) => { if (type === 'message') windowListeners.push(listener); },
   };
   runInNewContext(readFileSync(path.join(__dirname, '../../media/watch.js'), 'utf8'), {
-    document: doc, window, acquireVsCodeApi: () => ({ postMessage: (m: Record<string, unknown>) => posted.push(structuredClone(m)) }),
+    document: doc, window, acquireVsCodeApi: () => ({ postMessage: (m: Record<string, unknown>) => posted.push(structuredClone(m)), getState: () => savedState, setState: (value: Record<string, unknown>) => { savedState = structuredClone(value); } }),
   });
   const deliver = (data: unknown) => windowListeners.forEach(l => l(new FakeEvent('message', { data })));
   const list = doc.getElementById('values')!;
   const row = (p: string) => list.children.find(item => item.getAttribute('aria-label')?.startsWith(p + ','))!;
   const writes = () => posted.filter(m => m.type === 'write');
-  return { doc, posted, deliver, list, row, writes };
+  return { doc, posted, deliver, list, row, writes, savedState: () => savedState };
 }
 
 const setpoint = (number: number) => ({ path: 'tune_lab::SETPOINT', type: 'f32', kind: 'param', writable: true, display: `tune_lab::SETPOINT = ${number}`, number, reason: 'The firmware applies its range and step limits.' });
@@ -272,4 +274,69 @@ test('the host never writes a read-only value and drops a duplicate write', asyn
   await handler({ type: 'remove', path: 'motor.speed' });
   await handler({ type: 'remove', path: 'missing' });
   assert.deepEqual(removed, ['missing']);
+});
+
+
+test('structs expand with short field names, keyboard navigation, and persistent expansion', () => {
+  const values = [{ path: 'motor.state', type: 'MotorSnapshot', kind: 'watch', writable: false, display: 'motor.state: MotorSnapshot', children: [
+    { ...speed, path: 'motor.state.speed', label: 'speed' },
+    { path: 'motor.state.pi', label: 'pi', type: 'PiSnapshot', writable: false, display: 'motor.state.pi: PiSnapshot', children: [
+      { ...speed, path: 'motor.state.pi.integral', label: 'integral' },
+    ] },
+  ] }, setpoint(100)];
+  const payload = { type: 'values', message: '', values, watches: [], errors: [] };
+  const ui = loadWebview();
+  ui.deliver(payload);
+  const root = ui.row('motor.state');
+  const child = ui.row('motor.state.speed');
+  const nested = ui.row('motor.state.pi');
+  const integral = ui.row('motor.state.pi.integral');
+  assert.equal(root.getAttribute('role'), 'treeitem');
+  assert.equal(root.getAttribute('aria-expanded'), 'false');
+  assert.equal(child.hidden, true);
+  root.focus(); root.key('ArrowDown');
+  assert.equal(ui.doc.activeElement, ui.row('tune_lab::SETPOINT'), 'navigation skips collapsed descendants');
+  root.byClass('toggle')[0].click();
+  assert.equal(child.hidden, false);
+  assert.equal(child.byClass('leaf')[0].textContent, 'speed');
+  assert.equal(child.getAttribute('aria-level'), '2');
+  assert.equal(integral.hidden, true);
+  nested.focus(); nested.key('ArrowRight');
+  assert.equal(integral.hidden, false);
+  integral.focus(); integral.key('ArrowLeft');
+  assert.equal(ui.doc.activeElement, nested);
+  root.byClass('toggle')[0].click();
+  assert.equal(integral.hidden, true);
+  root.byClass('toggle')[0].click();
+  assert.equal(integral.hidden, false, 'nested expansion survives collapsing its ancestor');
+  ui.deliver(payload);
+  assert.equal(ui.row('motor.state'), root, 'polls retain the same rows');
+  assert.equal(integral.hidden, false);
+  const reopened = loadWebview(ui.savedState());
+  reopened.deliver(payload);
+  assert.equal(reopened.row('motor.state.pi.integral').hidden, false);
+});
+
+test('writable struct fields keep inline edits through polls; collapsing cancels without writing', () => {
+  const payload = { type: 'values', message: '', values: [{ path: 'CONTROL', type: 'Controller', writable: false, display: 'CONTROL: Controller', children: [
+    { ...setpoint(2), path: 'CONTROL.kp', label: 'kp', kind: 'raw' },
+  ] }], watches: ['CONTROL'], errors: [] };
+  const ui = loadWebview();
+  ui.deliver(payload);
+  ui.row('CONTROL').key('ArrowRight');
+  const child = ui.row('CONTROL.kp');
+  child.byClass('value')[0].click();
+  const input = child.byClass('edit')[0];
+  input.value = '0.5';
+  ui.deliver(payload);
+  assert.equal(child.byClass('edit')[0], input);
+  assert.equal(input.value, '0.5');
+  input.key('Enter');
+  assert.deepEqual(ui.writes(), [{ type: 'write', path: 'CONTROL.kp', input: '0.5' }]);
+  ui.deliver({ type: 'reply', path: 'CONTROL.kp', ok: true, text: 'Applied' });
+  child.byClass('value')[0].click();
+  ui.row('CONTROL').byClass('toggle')[0].click();
+  assert.equal(child.hidden, true);
+  assert.equal(child.byClass('edit').length, 0);
+  assert.equal(ui.writes().length, 1);
 });

@@ -103,6 +103,12 @@ one at a time through one queue. The next poll starts `tuningStudio.pollInterval
 ms after the previous one started, or at once if it took longer.
 
 Each value takes one row: the name on the left, the value on the right.
+Structs and arrays have a disclosure arrow. Click the arrow or name to expand;
+Left/Right arrows collapse or expand from the keyboard. Children show short field
+names, with full paths in their hovers and Copy Path. Expansion survives polls
+and webview recreation. Numeric descendants appear in Plot's **+ Add variable**
+list even when their parent is collapsed.
+
 Writable values use the number color. Read-only values are gray, and values
 that could not be read show their error in gray italics. Hover a row for the
 full value and the reason it is read-only or failed.
@@ -133,6 +139,14 @@ full value and the reason it is read-only or failed.
   Choose its scalar type and place the call before the task uses the value.
   Rebuild and flash before expecting the new declaration to appear.
 
+A `watch!` struct's children come from the same counter-validated snapshot and
+remain read-only. Supported fields of ordinary DWARF structs retain their own
+write permissions and inline editors. Rust enums expose only the active payload.
+Inspection includes up to 64 children per node, six levels, and 256 descendants
+per root. Hover the parent for an omission note when a limit is reached.
+Pointers and slices are not expanded automatically; add an explicit location
+when you need one. Older CLIs without structured children still show flat rows.
+
 Direct task-local edits require a currently resolvable local with an aligned
 1-, 2-, or 4-byte scalar. The task can change state after resolution; writes
 remain best effort. Locals optimized out of the binary, in inactive states,
@@ -147,7 +161,8 @@ The watch list and plot layout are saved per workspace.
 Sample Tasks runs `tuning-studio tasks --duration <tuningStudio.tasksDuration>`
 once. The session pauses its other work while it samples, so Live Watch pauses
 too and the plot shows a gap. The view never samples by itself. The message
-line gives the sample's time and sample count. Show Tasks Output opens the
+line shows compact sample totals, such as `83 samples · 200 ms · 414/s`.
+Hover a task for the capture time. Show Tasks Output opens the
 CLI's text for every sample. A state with a source line opens it on click.
 
 ## Plot
