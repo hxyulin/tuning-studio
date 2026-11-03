@@ -148,7 +148,7 @@ A read of a `watch!` value that overlapped a write is retried, up to 10 times.
 consistent snapshot; `set` sends a request that firmware applies on its next
 macro call. It waits up to 500 ms for acknowledgment. If no call arrives, the
 request remains pending, including after a timeout. There are no parameter
-defaults, ranges, or step limits. See [editable locals](../tuning-studio-api#editable-locals).
+defaults or ranges. See [editable locals](../tuning-studio-api#editable-locals).
 
 Firmware with the API's optional `embassy` integration can also publish task
 profiling counters as `tuning_studio.tasks`. Read or watch that value like any

@@ -34,8 +34,8 @@ changes itself, within limits it declares.
 
 ```text
 $ tuning-studio values
-tune_lab::KP: f32 = 0.02 (default 0.02, 0.0 to 1.0, step 0.01)
-tune_lab::SETPOINT: f32 = 100.0 rad/s (default 100.0, -300.0 to 300.0, step 1.0)
+tune_lab::KP: f32 = 0.02 (default 0.02, 0.0 to 1.0, flash key motor.kp)
+tune_lab::SETPOINT: f32 = 100.0 rad/s (default 100.0, -300.0 to 300.0)
 motor.speed: f32 = 91.16411 rad/s
 motor.state: MotorSnapshot
   speed: f32 = 91.17929
@@ -45,13 +45,13 @@ motor.state: MotorSnapshot
     saturated: bool = false
 
 $ tuning-studio set tune_lab::SETPOINT 120
-tune_lab::SETPOINT: f32 = 104.0 rad/s (target 120.0, default 100.0, -300.0 to 300.0, step 1.0)
+tune_lab::SETPOINT: f32 = 120.0 rad/s (default 100.0, -300.0 to 300.0)
 ```
 
 | Task | Tuning Studio provides |
 | --- | --- |
 | Inspect state | `read` and `watch` on symbol paths such as `CONTROL.yaw.gains[2]`, or on raw addresses with a type, and `trace`, which records every write to a value |
-| Tune a controller | `Param`s with a range and a step per tick, changed with `set`, which waits for the firmware's reply |
+| Tune a controller | `Param`s with a range, changed with `set`, which waits for the firmware's reply |
 | Watch async code | `watch!` values that are never torn, and `tasks`, which profiles each Embassy task |
 | Run firmware | `run` as a Cargo runner: flash, reset, then print RTT and defmt logs |
 | Debug | `halt`, `resume`, `step`, hardware breakpoints, and a GDB server |
@@ -108,7 +108,7 @@ Choose how to expose each value:
 | --- | --- | --- |
 | `watch!` | Read-only telemetry, including snapshots of structs | Publishes a copy each time the firmware calls it; the host cannot edit it |
 | `watch_mut!` | Testing or tuning an existing scalar local or field | Applies a pending edit through your mutable reference, then publishes the value |
-| `params!` / `Param` | Configuration such as setpoints and PID gains | `get()` applies host requests within the declared range and step limit |
+| `params!` / `Param` | Configuration such as setpoints and PID gains | `get()` applies host requests within the declared range |
 
 For example, in a control loop:
 
@@ -116,8 +116,8 @@ For example, in a control loop:
 use tuning_studio_api::{params, watch, watch_mut};
 
 params! {
-    static SETPOINT: f32 = 100.0, range = -300.0..=300.0, max_step = 1.0, unit = "rad/s";
-    static KP: f32 = 0.02, range = 0.0..=1.0, max_step = 0.01;
+    static SETPOINT: f32 = 100.0, range = -300.0..=300.0, unit = "rad/s";
+    static KP: f32 = 0.02, range = 0.0..=1.0;
 }
 
 // Call once per control tick with the controller's existing integral field.
@@ -138,11 +138,13 @@ The host can read the last `watch!` snapshot even while the task is suspended.
 `watch_mut!` keeps the variable in your controller; for a field, pass
 `&mut controller.integral`. An edit takes effect once at the next macro call,
 and later firmware code can change it again. It supports `f32`, `bool`, and
-8-, 16-, and 32-bit integers, with no range or step limits. Use a unique name
+8-, 16-, and 32-bit integers, with no range limits. Use a unique name
 and a separate macro call site for each value you expose.
 
-Call each parameter's `get()` once per control tick to apply requests and
-advance its step limit. Parameter persistence to flash is not implemented yet.
+Call each parameter's `get()` where the control loop can apply a pending edit.
+For flash integration, mark parameters with `persist = "drive.kp"`,
+restore values at boot with `restore`, and save `last()` through your firmware
+store. The API does not perform flash writes.
 See the [firmware API guide](crates/tuning-studio-api) for struct snapshots,
 editable locals, and optional Embassy trace hooks.
 

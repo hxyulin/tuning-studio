@@ -26,7 +26,7 @@ pub enum Action {
     /// Suggest symbols and fields for a watch path as JSON
     Complete(CompleteArgs),
     /// Write one value, then read it back. A `Param` changes through the
-    /// firmware, which applies its range and step.
+    /// firmware, which applies its range.
     Set(SetArgs),
     /// Halt the core
     Halt,

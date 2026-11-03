@@ -127,7 +127,7 @@ enum Command {
         args: CompleteArgs,
     },
     /// Write one value, then read it back. A `Param` changes through the
-    /// firmware, which applies its range and step.
+    /// firmware, which applies its range.
     Set {
         #[command(flatten)]
         target: TargetArgs,

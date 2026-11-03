@@ -149,6 +149,21 @@ fn unit(elf: &ElfInfo, memory: &mut dyn Memory, node: &SymbolNode) -> String {
     unit
 }
 
+/// Optional stable flash key. Older firmware has no persistence metadata.
+pub fn persistence_key(
+    elf: &ElfInfo,
+    memory: &mut dyn Memory,
+    node: &SymbolNode,
+) -> Option<String> {
+    let field = field(elf, memory, node, "persist").ok()?;
+    let preview = tree::preview(elf, &field.node, &mut |address, len| {
+        memory.read(address, len).map_err(|e| format!("{e:#}"))
+    })
+    .ok()??;
+    let key: String = serde_json::from_str(&preview.text).ok()?;
+    (!key.is_empty()).then_some(key)
+}
+
 /// The bytes [`render_watch`] reads: only the counters and what lies between
 /// them, so the window a write can overlap stays as short as it can be.
 pub fn watch_span(
@@ -244,7 +259,7 @@ pub fn render_param(elf: &ElfInfo, memory: &mut dyn Memory, node: &SymbolNode) -
     let param = Mailbox::new(elf, memory, node)?;
     let scalar = scalar(&param.value)?;
     let value = text(memory, &param.value)?;
-    let target = field_text(elf, memory, node, "target")?;
+    let target = field_text(elf, memory, node, "target").unwrap_or_else(|_| value.clone());
     let mut notes = Vec::new();
     if target != value {
         notes.push(format!("target {target}"));
@@ -260,13 +275,17 @@ pub fn render_param(elf: &ElfInfo, memory: &mut dyn Memory, node: &SymbolNode) -
         if min != lowest || max != highest {
             notes.push(format!("{min} to {max}"));
         }
-        let step = field_text(elf, memory, node, "max_step")?;
-        if step != highest {
+        if let Ok(step) = field_text(elf, memory, node, "max_step")
+            && step != highest
+        {
             notes.push(format!("step {step}"));
         }
     }
     if memory.word(param.request_id.address, 4)? != memory.word(param.reply_id.address, 4)? {
         notes.push("a request is waiting for the firmware".into());
+    }
+    if let Some(key) = persistence_key(elf, memory, node) {
+        notes.push(format!("flash key {key}"));
     }
     let unit = unit(elf, memory, node);
     Ok(format!(
@@ -329,7 +348,8 @@ pub fn request(
         APPLIED => Ok(String::new()),
         CLAMPED => Ok(format!(
             "{text} is outside the range; the firmware clamped it to {}\n",
-            field_text(elf, memory, node, "target")?
+            field_text(elf, memory, node, "target")
+                .or_else(|_| field_text(elf, memory, node, "value"))?
         )),
         REFUSED => bail!("the firmware refused {text} for {}", node.path),
         other => bail!("the firmware answered with an unknown reply {other}"),
@@ -490,6 +510,31 @@ mod tests {
                 format!("{path}: {expected}\n")
             );
         }
+    }
+
+    #[test]
+    fn current_params_expose_flash_keys_without_a_ramp_target() {
+        let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/params_v2.elf");
+        let elf = ElfParser::parse(fixture).unwrap();
+        let mut memory = Fake::from_elf(fixture);
+        let kp = node(&elf, &mut memory, "tune_lab::KP");
+        assert!(field(&elf, &mut memory, &kp, "target").is_err());
+        assert!(field(&elf, &mut memory, &kp, "max_step").is_err());
+        assert_eq!(
+            persistence_key(&elf, &mut memory, &kp).as_deref(),
+            Some("motor.kp")
+        );
+        assert_eq!(
+            render_param(&elf, &mut memory, &kp).unwrap(),
+            "tune_lab::KP: f32 = 0.02 (default 0.02, 0.0 to 1.0, flash key motor.kp)\n"
+        );
+        let json: serde_json::Value = serde_json::from_str(
+            &crate::inspect::inspect(Some(&elf), &mut memory, &["tune_lab::KP".into()]).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(json["values"][0]["persistence_key"], "motor.kp");
+        let enable = node(&elf, &mut memory, "tune_lab::ENABLE");
+        assert_eq!(persistence_key(&elf, &mut memory, &enable), None);
     }
 
     #[test]

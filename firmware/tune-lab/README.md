@@ -25,7 +25,7 @@ Then, from another terminal:
 
 ```sh
 tuning-studio values
-tuning-studio set tune_lab::SETPOINT 150    # ramps at 1 rad/s per tick
+tuning-studio set tune_lab::SETPOINT 150    # applies at the next firmware get()
 tuning-studio watch motor.speed tune_lab::SETPOINT
 tuning-studio set tune_lab::KP 5            # clamped to 1.0
 tuning-studio set tune_lab::KP.value 1      # refused: set the Param itself

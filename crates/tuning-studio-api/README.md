@@ -5,7 +5,7 @@ Values for firmware that Tuning Studio reads and tunes over SWD:
 - `watch!` copies a value into a static that the host reads. Only the firmware
   writes it.
 - `Param` is a value the host asks to change. The firmware applies the request
-  where it chooses, within a declared range and step, and replies.
+  where it chooses, within a declared range, and replies.
 - `watch_mut!` publishes a scalar local and applies host edits through a mutable
   reference. It leaves the local unchanged when no edit is pending.
 
@@ -41,8 +41,7 @@ motor on the next tick.
 
 `Param` never lets the host write the value the firmware runs with. The host
 leaves a request. The firmware takes it in `Param::get`, at a point in its loop
-it chose, then clamps it to the declared range. It moves toward the request by
-at most `max_step` per call and writes back a reply. Each field has one
+it chose, then clamps it to the declared range. It applies the clamped value in full and writes back a reply. Each field has one
 writer, so no write is lost or torn. The CLI also refuses raw writes into a
 `Param`'s or a `watch!` value's fields.
 
@@ -58,8 +57,8 @@ use tuning_studio_api::{params, watch};
 
 params! {
     /// Target speed
-    static SETPOINT: f32 = 100.0, range = -300.0..=300.0, max_step = 1.0, unit = "rad/s";
-    static KP: f32 = 0.02, range = 0.0..=1.0, max_step = 0.01;
+    static SETPOINT: f32 = 100.0, range = -300.0..=300.0, unit = "rad/s";
+    static KP: f32 = 0.02, range = 0.0..=1.0;
     static ENABLE: bool = true;
 }
 
@@ -72,11 +71,10 @@ fn control(speed: f32) -> f32 {
 
 Each option after the default calls the `Param` builder method of that name,
 so a single parameter can also be written as
-`static KP: Param<f32> = Param::new(0.02).range(0.0..=1.0).max_step(0.01);`.
+`static KP: Param<f32> = Param::new(0.02).range(0.0..=1.0);`.
 Doc comments and other attributes pass through.
 
-Call `get` once per control tick. Each call applies a pending request and
-moves the value one step. A `Param` holds `f32`, `bool`, or an integer up to 32
+Call `get` once per control tick. Each call applies a pending request in full. A `Param` holds `f32`, `bool`, or an integer up to 32
 bits, so the host can read it in one access.
 
 `watch!` takes a name, the type, and the value. The name becomes the static's
@@ -183,7 +181,7 @@ means that the edit was assigned there, not that later code preserved it.
 
 Supported types are `f32`, `bool`, and signed or unsigned 8-, 16-, and 32-bit
 integers. Invalid boolean and NaN requests are refused. There are no defaults,
-ranges, or step limits; use `Param` when you want those policies. Structs can
+ranges; use `Param` when you want those policies. Structs can
 publish read-only snapshots with `watch!`; expose editable scalar fields with
 separate `watch_mut!` calls.
 
@@ -271,7 +269,46 @@ even while halted. Raw address writes remain debugger operations and bypass
 task-path checks. `watch!` copies remain read-only, and `Param` changes still go
 through the firmware request protocol.
 
+## Flash persistence
+
+Opt in with a stable key. Parameters without a key stay transient:
+
+```rust
+use tuning_studio_api::{params, InvalidParamValue};
+params! {
+    static KP: f32 = 0.02, range = 0.0..=1.0, persist = "drive.kp";
+}
+fn restore_at_boot(saved_gain: f32) -> Result<(), InvalidParamValue> {
+    KP.restore(saved_gain)?;
+    Ok(())
+}
+// Your flash store saves KP.last() under KP.persistence_key().unwrap().
+```
+
+`persist` is metadata, not a flash operation. The CLI shows the key in parameter
+reads and returns `persistence_key` in `inspect` JSON. Keys must be nonempty and
+unique within your store. Keep a key unchanged when renaming its Rust symbol.
+Choose a new key or migrate the record when changing a parameter's type or meaning.
+
+The firmware loads records at boot and calls `restore`. Restored values use the
+current range; NaNs are rejected without changing the value. A pending host edit
+is left queued and still applies on the next `get`. Restoring does not change the
+compiled default. Save `last()` after edits settle, on an explicit save action or
+with debouncing. A record read from `last()` can become stale while an asynchronous
+save runs; the application must track later changes if it displays a saved status.
+
+Use your board's flash driver or a key-value store for encoding, schema versions,
+checksums, power-loss recovery, and wear management. Save only the parameter
+value and key, never the in-memory `Param` struct or its request counters. No
+flash work happens inside `get`, a critical section, or an interrupt handler.
+
+The API no longer ramps edits over successive `get` calls. Remove `max_step`
+from older declarations. Keep slew limiting in the control code where it can use
+elapsed time rather than the number of reads. Update the CLI with the firmware;
+the current CLI also reads older parameter layouts.
+
 ## Not yet
 
-- Saving parameters to flash, and restoring them at boot.
+- A built-in flash driver or a host Save to Flash command. Persistence keys and
+  firmware restore hooks are available; the application owns storage.
 - The same requests over USB serial, for builds without a probe attached.

@@ -14,13 +14,13 @@ use tuning_studio_api::{Watchable, params, watch, watch_mut};
 
 params! {
     /// Target speed
-    static SETPOINT: f32 = 100.0, range = -300.0..=300.0, max_step = 1.0, unit = "rad/s";
-    static KP: f32 = 0.02, range = 0.0..=1.0, max_step = 0.01;
-    static KI: f32 = 0.5, range = 0.0..=10.0, max_step = 0.1;
+    static SETPOINT: f32 = 100.0, range = -300.0..=300.0, unit = "rad/s";
+    static KP: f32 = 0.02, range = 0.0..=1.0, persist = "motor.kp";
+    static KI: f32 = 0.5, range = 0.0..=10.0;
     /// Whether the controller drives the motor; off, the output is 0
     static ENABLE: bool = true;
     /// Largest output, in percent
-    static OUTPUT_LIMIT: u8 = 100, range = 0..=100, max_step = 5, unit = "%";
+    static OUTPUT_LIMIT: u8 = 100, range = 0..=100, unit = "%";
 }
 
 /// Speed per unit of output, rad/s

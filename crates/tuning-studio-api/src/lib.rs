@@ -5,7 +5,7 @@
 //!   Only the firmware writes it. Anything [`Watchable`] can be watched: every
 //!   `Copy` type, and structs that derive it.
 //! - [`Param`] is a value the host asks to change. The firmware applies the
-//!   request in [`Param::get`], within the declared range and step, and replies.
+//!   request in [`Param::get`], within the declared range, and replies.
 //! - [`watch_mut!`] publishes a scalar local and applies host edits through a
 //!   temporary mutable reference. The local keeps its normal Rust ownership.
 //! - The optional `embassy` feature profiles tasks through Embassy 0.10's trace
@@ -197,8 +197,8 @@ pub mod reply {
 /// ```
 /// tuning_studio_api::params! {
 ///     /// Target speed
-///     pub static SETPOINT: f32 = 100.0, range = -300.0..=300.0, max_step = 1.0, unit = "rad/s";
-///     static KP: f32 = 0.02, range = 0.0..=1.0, max_step = 0.01;
+///     pub static SETPOINT: f32 = 100.0, range = -300.0..=300.0, unit = "rad/s";
+///     static KP: f32 = 0.02, range = 0.0..=1.0, persist = "drive.kp";
 ///     static ENABLE: bool = true;
 /// }
 /// ```
@@ -219,7 +219,7 @@ macro_rules! params {
 /// ```
 /// use tuning_studio_api::Param;
 ///
-/// static YAW_KP: Param<f32> = Param::new(1.2).range(0.0..=10.0).max_step(0.1).unit("1/s");
+/// static YAW_KP: Param<f32> = Param::new(1.2).range(0.0..=10.0).unit("1/s");
 ///
 /// fn control_tick() {
 ///     let kp = YAW_KP.get();
@@ -229,15 +229,13 @@ macro_rules! params {
 ///
 /// The host never writes the value the firmware runs with. It writes
 /// `request`, then a new `request_id`. The next [`Param::get`] checks the
-/// request, sets `target`, and writes the result to `reply` and the id to
-/// `reply_id`. Each `get` then moves `value` toward `target` by at most
-/// `max_step`. The host waits for the reply before sending another request.
+/// request, clamps it to the range, replaces `value`, and writes the result to
+/// `reply` and the id to `reply_id`. The host waits for the reply before
+/// sending another request.
 #[repr(C)]
 pub struct Param<T> {
-    /// What the firmware runs with; only `get` writes it
+    /// What the firmware runs with; only firmware writes it
     value: UnsafeCell<T>,
-    /// What `value` moves toward
-    target: UnsafeCell<T>,
     /// Written by the host: the value's bytes, zero-extended to 32 bits
     request: AtomicU32,
     /// Written by the host after `request`
@@ -249,21 +247,31 @@ pub struct Param<T> {
     default: T,
     min: T,
     max: T,
-    max_step: T,
+    persist: &'static str,
     unit: &'static str,
 }
 
-// SAFETY: `get` reads and writes `value` and `target` only inside a critical
+// SAFETY: firmware reads and writes `value` only inside a critical
 // section; the host's fields are atomics.
 unsafe impl<T: Value + Send> Sync for Param<T> {}
 
+/// A restored parameter value is NaN and cannot be applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidParamValue;
+
+impl core::fmt::Display for InvalidParamValue {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("parameter value is NaN")
+    }
+}
+impl core::error::Error for InvalidParamValue {}
+
 impl<T: Value> Param<T> {
-    /// A parameter that starts at `default`, with no range or step limit.
+    /// A parameter that starts at `default`, with no range limit.
     #[must_use]
     pub const fn new(default: T) -> Self {
         Self {
             value: UnsafeCell::new(default),
-            target: UnsafeCell::new(default),
             request: AtomicU32::new(0),
             request_id: AtomicU32::new(0),
             reply_id: AtomicU32::new(0),
@@ -271,7 +279,7 @@ impl<T: Value> Param<T> {
             default,
             min: T::MIN,
             max: T::MAX,
-            max_step: T::UNLIMITED,
+            persist: "",
             unit: "",
         }
     }
@@ -285,11 +293,52 @@ impl<T: Value> Param<T> {
         self
     }
 
-    /// Move by at most `max_step` per [`Param::get`]. Ignored for `bool`.
+    /// Mark this parameter for firmware-managed flash storage under a stable key.
+    ///
+    /// Keys must be unique within the application's parameter store. Keep them
+    /// unchanged across symbol renames. This hint does not perform flash I/O.
+    ///
+    /// # Panics
+    /// Panics if `key` is empty.
     #[must_use]
-    pub const fn max_step(mut self, max_step: T) -> Self {
-        self.max_step = max_step;
+    pub const fn persist(mut self, key: &'static str) -> Self {
+        assert!(!key.is_empty(), "persistence key must not be empty");
+        self.persist = key;
         self
+    }
+
+    /// The stable storage key, or `None` for a parameter kept only in RAM.
+    pub const fn persistence_key(&self) -> Option<&'static str> {
+        if self.persist.is_empty() {
+            None
+        } else {
+            Some(self.persist)
+        }
+    }
+
+    /// Restore a value loaded by the firmware's flash backend, clamped to the range.
+    ///
+    /// Load at boot before accepting host edits. Restoring does not acknowledge
+    /// or discard a pending host request; the next `get` still applies it.
+    /// For saving, write `last()` under `persistence_key()` after edits settle.
+    /// Flash encoding, schema migration, wear, and save scheduling belong to
+    /// the application. This method performs no flash I/O.
+    ///
+    /// # Errors
+    /// Returns [`InvalidParamValue`] for a NaN, leaving the current value intact.
+    pub fn restore(&self, value: T) -> Result<T, InvalidParamValue> {
+        if value.partial_cmp(&value).is_none() {
+            return Err(InvalidParamValue);
+        }
+        let this = escape(self);
+        critical_section::with(|_| {
+            let (value, _) = T::limit(value, this.min, this.max);
+            // SAFETY: every firmware access to `value` holds this critical section.
+            unsafe {
+                *this.value.get() = value;
+            }
+            Ok(value)
+        })
     }
 
     /// The unit the host shows, such as `"rad/s"`.
@@ -299,19 +348,19 @@ impl<T: Value> Param<T> {
         self
     }
 
-    /// Apply a pending request, step toward the target, and return the value.
+    /// Apply a pending request in full, clamped to the range, and return the value.
     /// Call it once per control tick, where a change is safe to take.
     pub fn get(&self) -> T {
         let this = escape(self);
         critical_section::with(|_| {
-            // SAFETY: only `get` touches `value` and `target`, inside the critical section.
-            let (value, target) = unsafe { (&mut *this.value.get(), &mut *this.target.get()) };
+            // SAFETY: every firmware access to `value` holds this critical section.
+            let value = unsafe { &mut *this.value.get() };
             let id = this.request_id.load(Ordering::Acquire);
             if id != this.reply_id.load(Ordering::Relaxed) {
                 let reply = match T::from_request(this.request.load(Ordering::Relaxed)) {
                     Some(request) => {
                         let (limited, reply) = T::limit(request, this.min, this.max);
-                        *target = limited;
+                        *value = limited;
                         reply
                     }
                     None => reply::REFUSED,
@@ -319,7 +368,6 @@ impl<T: Value> Param<T> {
                 this.reply.store(reply, Ordering::Relaxed);
                 this.reply_id.store(id, Ordering::Release);
             }
-            *value = T::toward(*value, *target, this.max_step);
             *value
         })
     }
@@ -346,19 +394,15 @@ fn escape<T>(value: &T) -> &T {
 
 /// The types a [`Param`] or [`WatchMut`] can hold: at most 32 bits, so the host reads them
 /// whole.
-pub trait Value: Copy + sealed::Sealed {
+pub trait Value: Copy + PartialOrd + sealed::Sealed {
     #[doc(hidden)]
     const MIN: Self;
     #[doc(hidden)]
     const MAX: Self;
     #[doc(hidden)]
-    const UNLIMITED: Self;
-    #[doc(hidden)]
     fn from_request(bits: u32) -> Option<Self>;
     #[doc(hidden)]
     fn limit(request: Self, min: Self, max: Self) -> (Self, u8);
-    #[doc(hidden)]
-    fn toward(from: Self, to: Self, max_step: Self) -> Self;
 }
 
 mod sealed {
@@ -381,7 +425,6 @@ macro_rules! integer {
         impl Value for $type {
             const MIN: Self = <$type>::MIN;
             const MAX: Self = <$type>::MAX;
-            const UNLIMITED: Self = <$type>::MAX;
             fn from_request(bits: u32) -> Option<Self> {
                 // The host zero-extends the value's bytes, so truncating recovers them.
                 Some(bits as $type)
@@ -389,15 +432,7 @@ macro_rules! integer {
             fn limit(request: Self, min: Self, max: Self) -> (Self, u8) {
                 limit(request, min, max)
             }
-            fn toward(from: Self, to: Self, max_step: Self) -> Self {
-                // A signed range can be wider than the type's largest step.
-                if max_step == Self::UNLIMITED {
-                    return to;
-                }
-                let step = i64::from(max_step).abs();
-                let next = i64::from(from) + (i64::from(to) - i64::from(from)).clamp(-step, step);
-                next as $type
-            }
+
         }
     )*};
 }
@@ -408,20 +443,11 @@ impl sealed::Sealed for f32 {}
 impl Value for f32 {
     const MIN: Self = f32::NEG_INFINITY;
     const MAX: Self = f32::INFINITY;
-    const UNLIMITED: Self = f32::INFINITY;
     fn from_request(bits: u32) -> Option<Self> {
         Some(f32::from_bits(bits)).filter(|value| !value.is_nan())
     }
     fn limit(request: Self, min: Self, max: Self) -> (Self, u8) {
         limit(request, min, max)
-    }
-    fn toward(from: Self, to: Self, max_step: Self) -> Self {
-        let change = to - from;
-        if change.abs() <= max_step.abs() {
-            to
-        } else {
-            from + max_step.abs().copysign(change)
-        }
     }
 }
 
@@ -429,7 +455,6 @@ impl sealed::Sealed for bool {}
 impl Value for bool {
     const MIN: Self = false;
     const MAX: Self = true;
-    const UNLIMITED: Self = true;
     fn from_request(bits: u32) -> Option<Self> {
         match bits {
             0 => Some(false),
@@ -439,9 +464,6 @@ impl Value for bool {
     }
     fn limit(request: Self, min: Self, max: Self) -> (Self, u8) {
         limit(request, min, max)
-    }
-    fn toward(_: Self, to: Self, _: Self) -> Self {
-        to
     }
 }
 
@@ -465,15 +487,15 @@ mod tests {
     }
 
     #[test]
-    fn applies_requests_in_get_within_range_and_step() {
-        let kp = Param::new(1.0f32).range(0.0..=10.0).max_step(0.5);
+    fn applies_requests_in_get_within_range() {
+        let kp = Param::new(1.0f32).range(0.0..=10.0);
         assert_eq!(kp.get(), 1.0);
         assert_eq!(reply(&kp), (0, reply::NONE));
 
         let id = request(&kp, 2.0f32.to_bits());
         // Nothing changes until the firmware calls `get`.
         assert_eq!(kp.last(), 1.0);
-        assert_eq!(kp.get(), 1.5);
+        assert_eq!(kp.get(), 2.0);
         assert_eq!(reply(&kp), (id, reply::APPLIED));
         assert_eq!(kp.get(), 2.0);
         assert_eq!(kp.get(), 2.0);
@@ -484,7 +506,7 @@ mod tests {
         let id = request(&kp, f32::NAN.to_bits());
         kp.get();
         assert_eq!(reply(&kp), (id, reply::REFUSED));
-        // A refused request leaves the target alone.
+        // A refused request leaves the value alone.
         for _ in 0..100 {
             kp.get();
         }
@@ -494,9 +516,8 @@ mod tests {
 
     #[test]
     fn integers_and_bools() {
-        let offset = Param::new(0i16).range(-100..=100).max_step(30);
+        let offset = Param::new(0i16).range(-100..=100);
         request(&offset, (-50i16) as u16 as u32);
-        assert_eq!(offset.get(), -30);
         assert_eq!(offset.get(), -50);
 
         let wide = Param::new(i32::MIN);
@@ -509,6 +530,23 @@ mod tests {
         assert_eq!(reply(&enable).1, reply::REFUSED);
         request(&enable, 1);
         assert!(enable.get());
+    }
+
+    #[test]
+    fn persistence_is_explicit_and_restore_keeps_pending_host_edits() {
+        let kp = Param::new(1.0f32).range(0.0..=10.0).persist("drive.kp");
+        assert_eq!(kp.persistence_key(), Some("drive.kp"));
+        assert_eq!(Param::new(0u8).persistence_key(), None);
+        assert_eq!(kp.restore(20.0), Ok(10.0));
+        assert_eq!(kp.get(), 10.0);
+        assert_eq!(kp.restore(f32::NAN), Err(InvalidParamValue));
+        assert_eq!(kp.last(), 10.0);
+        let id = request(&kp, 3.0f32.to_bits());
+        assert_eq!(kp.restore(5.0), Ok(5.0));
+        assert_eq!(reply(&kp), (0, reply::NONE));
+        assert_eq!(kp.get(), 3.0);
+        assert_eq!(reply(&kp), (id, reply::APPLIED));
+        assert_eq!(kp.default_value(), 1.0);
     }
 
     struct Driver;

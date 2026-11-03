@@ -155,7 +155,7 @@ export function editReason(value: InspectValue): string {
     ? 'watch! publishes a read-only snapshot. Use watch_mut! with a mutable scalar to accept edits.'
     : 'This location cannot be written. Select a scalar field or expose it with watch_mut!.';
   if (value.kind === 'watch_mut') return 'Applied when the firmware next calls watch_mut!.';
-  if (value.kind === 'param') return 'The firmware applies its range and step limits.';
+  if (value.kind === 'param') return 'The firmware applies its range limits.';
   return 'Direct memory write. Task-local edits can race a task state change or be overwritten by the firmware.';
 }
 
