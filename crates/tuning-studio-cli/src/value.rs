@@ -286,6 +286,12 @@ fn preview(
 
 /// The type to decode after wrappers. `AtomicBool` stores its value in a `u8`.
 pub fn scalar_of(node: &SymbolNode) -> Option<VariableType> {
+    if node.wrappers.iter().any(|w| {
+        w.kind == tree::WrapperKind::Atomic
+            && (w.name == "AtomicBool" || w.name.starts_with("Atomic<bool"))
+    }) {
+        return Some(VariableType::Bool);
+    }
     match node.wrapper.as_deref() {
         Some("Atomic<bool>" | "AtomicBool") => Some(VariableType::Bool),
         _ => node.scalar,

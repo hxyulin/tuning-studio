@@ -144,8 +144,31 @@ remain read-only. Supported fields of ordinary DWARF structs retain their own
 write permissions and inline editors. Rust enums expose only the active payload.
 Inspection includes up to 64 children per node, six levels, and 256 descendants
 per root. Hover the parent for an omission note when a limit is reached.
-Pointers and slices are not expanded automatically; add an explicit location
-when you need one. Older CLIs without structured children still show flat rows.
+Pointers and slices have an arrow but are read only when opened. A `*` row
+contains a pointer's payload. Collapse a row to stop following it; a plotted
+pointee keeps its pointer dependencies active. Null, invalid, changed pointers,
+and cycles are reported in place. Opening a pointer does not pin its allocation
+or pause firmware. Pointee bytes are live reads outside a `watch!` snapshot.
+Each root has a 64 KiB pointee budget, and at most 64 pointer paths can be open.
+
+Rust wrappers keep their useful type names. `Atomic` and `Cell` scalars show
+values directly. Atomic writes require aligned 1-, 2-, or 4-byte accesses; the
+debug probe does not supply Rust atomic memory-ordering semantics. `Box`,
+`Pin<Box<_>>`, and `NonNull` expose their pointees. `Arc` and `Rc` show their
+payloads rather than allocation headers; their hovers show strong/weak counts.
+Shared payload fields are read-only unless an interior-mutable wrapper permits
+an edit. `RefCell` shows its value and borrow state, and refuses writes while
+borrowed; the host does not acquire a Rust borrow, so this remains best effort.
+Refcount and borrow bookkeeping cannot be edited through typed paths. `Weak`
+does not establish a live payload and reports that reason instead of following
+it. `MaybeUninit` identifies its unknown initialization state. Unsupported
+shared-pointer layouts fail with a reason instead of guessing an offset.
+
+The wrapper fixtures cover sized payloads on Rust 1.99.1. Trait objects and
+custom smart-pointer layouts are not decoded semantically. Shared references
+and const pointers are read-only, except through supported interior-mutable
+scalars. Older CLIs without structured children still show flat rows; use a
+matching current CLI for pointer expansion.
 
 Direct task-local edits require a currently resolvable local with an aligned
 1-, 2-, or 4-byte scalar. The task can change state after resolution; writes

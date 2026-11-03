@@ -60,6 +60,9 @@ pub struct ReadArgs {
 
 #[derive(Args, Debug, PartialEq)]
 pub struct InspectArgs {
+    /// Pointer or slice rows whose pointees should be included; repeat to follow deeper paths
+    #[arg(long = "expand")]
+    pub expansions: Vec<String>,
     /// Symbol paths or addresses, as for `read`; omit to discover API values
     pub locations: Vec<String>,
 }
@@ -179,7 +182,11 @@ impl Action {
             }
             Action::Values => push(&mut words, &["values"]),
             Action::Inspect(args) => {
-                push(&mut words, &["inspect", "--"]);
+                push(&mut words, &["inspect"]);
+                for path in &args.expansions {
+                    push(&mut words, &["--expand", path]);
+                }
+                push(&mut words, &["--"]);
                 words.extend(args.locations.iter().cloned());
             }
             Action::Set(args) => push(&mut words, &["set", &args.location, &args.value]),

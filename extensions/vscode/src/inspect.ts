@@ -14,6 +14,7 @@ export interface InspectValue {
   label?: string;
   children?: InspectValue[];
   childrenNote?: string;
+  expandable?: boolean;
 }
 
 export interface InspectResult {
@@ -46,7 +47,7 @@ export function parseInspect(stdout: string): InspectResult {
     if (!isObject(entry)) {
       throw new Error(`inspect value ${i} is not an object`);
     }
-    const { path, type, kind, writable, display, number, error, write_reason, label, children, children_note } = entry;
+    const { path, type, kind, writable, display, number, error, write_reason, label, children, children_note, expandable } = entry;
     if (typeof path !== 'string' || path === '') {
       throw new Error(`inspect value ${i} has no path`);
     }
@@ -76,6 +77,8 @@ export function parseInspect(stdout: string): InspectResult {
     if (typeof write_reason === 'string') value.writeReason = write_reason;
     if (label !== undefined && typeof label !== 'string') throw new Error(`inspect value ${path} has an invalid label`);
     if (children_note !== undefined && typeof children_note !== 'string') throw new Error(`inspect value ${path} has an invalid children note`);
+    if (expandable !== undefined && typeof expandable !== 'boolean') throw new Error(`inspect value ${path} has an invalid expansion flag`);
+    if (typeof expandable === 'boolean') value.expandable = expandable;
     if (typeof label === 'string') value.label = label;
     if (typeof children_note === 'string') value.childrenNote = children_note;
     if (parent?.error) {

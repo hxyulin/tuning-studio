@@ -35,6 +35,13 @@ export class WatchPanel implements vscode.WebviewViewProvider, vscode.Disposable
       if (typeof m.path !== 'string' || !m.path || m.path.length > 1024) return;
       if (m.type === 'add') { await this.watch.addWatch(m.path); return; }
       if (m.type === 'remove' && this.watch.watched.includes(m.path)) { await this.watch.removeWatch(m.path); return; }
+      if (m.type === 'expand' && (m.input === 'true' || m.input === 'false')) {
+        if (this.watch.lookup(m.path)?.expandable) {
+          const accepted = await this.watch.setExpanded(m.path, m.input === 'true');
+          if (accepted === false) void view.webview.postMessage({ type: 'expansionReply', path: m.path, ok: false, text: 'Pointer expansion limit (64). Collapse another pointer first.' });
+        }
+        return;
+      }
       if (m.type === 'write') {
         if (typeof m.input !== 'string' || !m.input.trim() || m.input.length > 1024 || this.writing.has(m.path)) return;
         const path = m.path;

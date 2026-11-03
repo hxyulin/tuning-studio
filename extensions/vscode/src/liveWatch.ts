@@ -1,11 +1,12 @@
 import * as vscode from 'vscode';
 import { Cli, CliResult } from './cli';
 import { inspectArgs } from './cliText';
-import { InspectValue, flattenValues, matchLocations, parseInspect } from './inspect';
+import { InspectValue, flattenValues, isDescendant, matchLocations, parseInspect } from './inspect';
 import { SessionController } from './session';
 import { pollInterval, probe } from './settings';
 
 const WATCHES_KEY = 'tuningStudio.watches';
+const EXPANDED_KEY = 'tuningStudio.pointerExpansions';
 
 export interface PollSample {
   /** Host time in seconds when the poll finished. */
@@ -29,6 +30,9 @@ export class LiveWatch implements vscode.Disposable {
   lastSuccess?: Date;
   paused = false;
 
+  private readonly expanded = new Set<string>();
+  private readonly pointers = new Set<string>();
+  private plotted: readonly string[] = [];
   private blocked = 0;
   private wasActive = false;
   private running = false;
@@ -48,6 +52,10 @@ export class LiveWatch implements vscode.Disposable {
   ) {
     const saved = state.get<unknown>(WATCHES_KEY, []);
     this.watched = Array.isArray(saved) ? saved.filter((w): w is string => typeof w === 'string') : [];
+    const expanded = state.get<unknown>(EXPANDED_KEY, []);
+    if (Array.isArray(expanded)) for (const path of expanded.slice(0, 64)) {
+      if (typeof path === 'string') { this.expanded.add(path); this.pointers.add(path); }
+    }
     this.disposables.push(session.onDidChange(() => this.reschedule()));
   }
 
@@ -104,6 +112,29 @@ export class LiveWatch implements vscode.Disposable {
     this.pollSoon();
   }
 
+  async setExpanded(path: string, expanded: boolean): Promise<boolean> {
+    if (expanded === this.expanded.has(path)) return true;
+    const active = this.expansionPaths();
+    if (expanded && !active.includes(path) && active.length >= 64) return false;
+    this.pointers.add(path);
+    if (expanded) this.expanded.add(path); else this.expanded.delete(path);
+    await this.state.update(EXPANDED_KEY, [...this.expanded]);
+    this.pollSoon();
+    return true;
+  }
+
+  setPlotted(paths: readonly string[]): void {
+    this.plotted = paths;
+    // Restore pointer dependencies even before the first poll after a reload.
+    for (const path of paths) for (const match of path.matchAll(/\.\*/g)) this.pointers.add(path.slice(0, match.index));
+    this.pollSoon();
+  }
+
+  private expansionPaths(): string[] {
+    const required = [...this.pointers].filter(pointer => this.plotted.some(path => isDescendant(path, pointer)));
+    return [...new Set([...required, ...this.expanded])].slice(0, 64);
+  }
+
   /** The latest value read for a path, from either group. */
   lookup(path: string): InspectValue | undefined {
     for (const values of this.watchedValues.values()) {
@@ -155,7 +186,7 @@ export class LiveWatch implements vscode.Disposable {
     const fresh: InspectValue[] = [];
     let ok = false;
     try {
-      const declared = await this.cli.run(inspectArgs(probe()), { timeoutMs: 5000 });
+      const declared = await this.cli.run(inspectArgs(probe(), [], this.expansionPaths()), { timeoutMs: 5000 });
       ok = this.apply(
         declared,
         (values) => {
@@ -168,7 +199,7 @@ export class LiveWatch implements vscode.Disposable {
 
       const locations = [...this.watched];
       if (locations.length > 0 && this.session.isReady) {
-        const watched = await this.cli.run(inspectArgs(probe(), locations), { timeoutMs: 5000 });
+        const watched = await this.cli.run(inspectArgs(probe(), locations, this.expansionPaths()), { timeoutMs: 5000 });
         const watchedOk = this.apply(
           watched,
           (values) => {
@@ -188,6 +219,7 @@ export class LiveWatch implements vscode.Disposable {
     }
     const numbers = new Map<string, number>();
     for (const value of flattenValues(fresh)) {
+      if (value.expandable && this.pointers.size < 1024) this.pointers.add(value.path);
       if (value.number !== undefined && value.error === undefined) {
         numbers.set(value.path, value.number);
       }

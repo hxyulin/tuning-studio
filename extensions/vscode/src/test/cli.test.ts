@@ -231,3 +231,12 @@ test('inspection trees retain numeric descendants and validate child paths', () 
   assert.equal(flattenValues(parseInspect(JSON.stringify({ version: 1, values: [setScalar()] })).values).length, 1, 'older CLI output still works');
   function setScalar() { return { path: 'x', type: 'f32', kind: 'param', writable: true, display: '1', number: 1 }; }
 });
+
+
+test('inspect expansion flags precede the location separator', () => {
+  assert.deepEqual(inspectArgs('probe', ['BOXED'], ['BOXED', 'BOXED.*.next']), [
+    'inspect', '--probe', 'probe', '--expand', 'BOXED', '--expand', 'BOXED.*.next', '--', 'BOXED',
+  ]);
+  assert.deepEqual(inspectArgs('', [], ['ROOT.ptr']), ['inspect', '--expand', 'ROOT.ptr']);
+  assert.throws(() => parseInspect(JSON.stringify({ version: 1, values: [{ path: 'PTR', type: '*mut u32', kind: 'raw', writable: false, display: '0x0', expandable: 'yes' }] })), /expansion flag/);
+});

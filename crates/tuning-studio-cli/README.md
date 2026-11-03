@@ -15,19 +15,33 @@ so wide integers may lose precision; display text keeps the scalar's digits.
 Aggregates include optional `children`, with the same fields as their parent,
 plus an optional short `label`. A `children_note` explains truncation. Each root
 includes at most 256 descendants, with 64 children per node and six levels of
-nesting. Pointers and slices are not followed automatically. Tagged enums expose
+nesting. An optional `expandable: true` marks a pointer or slice with deferred
+children. Repeat `--expand <path>` to include its pointee. At most 64 expansion
+paths and 64 KiB of pointee bytes per root are supported. Pointer bytes are
+checked again after sampling; a changed pointer discards its child samples.
+Nulls, read failures, and cycles are reported inline. Tagged enums expose
 only the active variant. These additive fields keep the response at version 1.
 Children of a declared `watch!` use the same validated snapshot and stay
 read-only. Their inspection paths omit storage fields, for example
 `motor.state.pi.integral`. `inspect` also accepts these paths directly and
 validates the owning watch before returning a child. Ordinary DWARF children
-retain their scalar write restrictions. The response does not include profiling
+retain their scalar write restrictions. Pointees are separate live reads even
+when the pointer was published by `watch!`; they do not inherit snapshot
+consistency. `Arc` and `Rc` dereference to their payloads using DWARF allocation
+member offsets. Their counts are hover metadata, not editable fields. Shared
+references and const pointers refuse ordinary scalar edits; supported interior
+mutation through atomics, `Cell`, or unborrowed `RefCell` remains best effort.
+These checks also apply to typed `set` paths. Raw address writes remain a
+debugger escape hatch. Atomic writes use single 8-, 16-, or 32-bit accesses,
+without Rust memory-ordering guarantees. The response does not include profiling
 events.
 
 ```sh
 tuning-studio inspect
 tuning-studio inspect -- motor.speed motor.integral
 tuning-studio inspect -- motor.state.pi.integral
+tuning-studio inspect --expand CONTROL_PTR -- CONTROL_PTR
+tuning-studio inspect --expand BOXED --expand 'BOXED.*.next' -- BOXED
 ```
 
 The `tuning-studio` command reads, writes and tunes variables in running

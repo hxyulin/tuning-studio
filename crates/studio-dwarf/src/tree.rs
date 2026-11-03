@@ -9,7 +9,11 @@
 //! `MaybeUninit`, embassy's blocking `Mutex`, newtypes) are shown through: a
 //! node has the type of the value inside, and its children are that value's.
 //! A reference therefore names members of the innermost type; one that names a
-//! wrapper's own member still resolves.
+//! wrapper's own member still resolves. Recognized Rust wrappers retain their
+//! names in `SymbolNode::wrappers`. Dereferencing `Arc` and `Rc` selects the
+//! payload at its DWARF offset, not the allocation header. `Weak` cannot establish
+//! a live payload and is refused. The original allocation type remains available
+//! as `pointee_type` for read-only metadata inspection.
 //!
 //! An embassy task pool is untyped bytes; [`Step::Task`] reads one of its slots
 //! as the task's `TaskStorage`, see [`crate::tasks`].
@@ -123,6 +127,108 @@ pub enum NodeKind {
     Other,
 }
 
+/// A recognized Rust storage or ownership wrapper, identified from DWARF names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum WrapperKind {
+    Atomic,
+    Cell,
+    RefCell,
+    UnsafeCell,
+    MaybeUninit,
+    Box,
+    Arc,
+    Rc,
+    Weak,
+    NonNull,
+    Pin,
+}
+
+/// A recognized wrapper in outer-to-inner order. Offsets still come from DWARF.
+#[derive(Debug, Clone, Serialize)]
+pub struct Wrapper {
+    pub kind: WrapperKind,
+    pub name: String,
+}
+
+fn recognized_wrappers(table: &TypeTable, type_id: TypeId) -> Vec<Wrapper> {
+    wrapper_chain(table, type_id)
+        .into_iter()
+        .filter_map(|id| {
+            let name = table.type_name(id);
+            let head = name.split('<').next()?.rsplit("::").next()?;
+            let kind = match head {
+                "Atomic" | "AtomicBool" | "AtomicU8" | "AtomicI8" | "AtomicU16" | "AtomicI16"
+                | "AtomicU32" | "AtomicI32" | "AtomicU64" | "AtomicI64" | "AtomicUsize"
+                | "AtomicIsize" | "AtomicPtr" => WrapperKind::Atomic,
+                "Cell" => WrapperKind::Cell,
+                "RefCell" => WrapperKind::RefCell,
+                "UnsafeCell" => WrapperKind::UnsafeCell,
+                "MaybeUninit" => WrapperKind::MaybeUninit,
+                "Box" => WrapperKind::Box,
+                "Arc" => WrapperKind::Arc,
+                "Rc" => WrapperKind::Rc,
+                "Weak" => WrapperKind::Weak,
+                "NonNull" => WrapperKind::NonNull,
+                "Pin" => WrapperKind::Pin,
+                _ => return None,
+            };
+            Some(Wrapper { kind, name })
+        })
+        .collect()
+}
+
+/// Arc and Rc carry an allocation pointer. Resolve the payload using its DWARF
+/// member offset, never a hard-coded allocator header size.
+fn shared_payload(
+    table: &TypeTable,
+    owner: TypeId,
+    inner: TypeId,
+) -> Result<Option<&MemberDef>, &'static str> {
+    let wrappers = recognized_wrappers(table, owner);
+    if wrappers.iter().any(|w| w.kind == WrapperKind::Weak) {
+        return Err("weak pointer does not establish a live payload; inspect an owning Arc or Rc");
+    }
+    let expected = if wrappers.iter().any(|w| w.kind == WrapperKind::Arc) {
+        "ArcInner"
+    } else if wrappers.iter().any(|w| w.kind == WrapperKind::Rc) {
+        "RcInner"
+    } else {
+        return Ok(None);
+    };
+    let Some(TypeDef::Struct(allocation)) = peeled_def(table, inner) else {
+        return Err("unsupported shared-pointer allocation layout");
+    };
+    if !allocation
+        .name
+        .as_deref()
+        .and_then(|name| name.split('<').next())
+        .is_some_and(|name| name.rsplit("::").next() == Some(expected))
+    {
+        return Err("unsupported shared-pointer allocation type");
+    }
+    if !["strong", "weak"]
+        .iter()
+        .all(|name| allocation.members.iter().any(|m| m.name == *name))
+    {
+        return Err("shared-pointer reference counts are missing");
+    }
+    let payload = allocation
+        .members
+        .iter()
+        .find(|m| m.name == "data" || m.name == "value")
+        .ok_or("shared-pointer payload is missing")?;
+    if payload
+        .offset
+        .checked_add(table.type_size(payload.type_id).unwrap_or(0))
+        .is_none_or(|end| end > allocation.size)
+    {
+        return Err("shared-pointer payload is outside its allocation");
+    }
+    Ok(Some(payload))
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SymbolNode {
@@ -137,6 +243,10 @@ pub struct SymbolNode {
     pub type_name: String,
     /// Outermost type when the node shows through wrappers, e.g. `Atomic<u32>`
     pub wrapper: Option<String>,
+    /// Recognized Rust wrappers, preserving their names when storage is peeled.
+    pub wrappers: Vec<Wrapper>,
+    /// DWARF pointee type before smart-pointer payload selection.
+    pub pointee_type: Option<TypeId>,
     pub kind: NodeKind,
     /// How to decode the bytes when the node is a single value
     pub scalar: Option<VariableType>,
@@ -461,12 +571,18 @@ pub fn children_page(
                 .collect(),
         },
         Some(TypeDef::Pointer(inner) | TypeDef::Reference(inner)) => {
+            let payload =
+                shared_payload(table, at.type_id, *inner).map_err(|reason| TreeError::BadStep {
+                    at: node.to_string(),
+                    reason: reason.into(),
+                })?;
+            let inner = payload.map_or(*inner, |member| member.type_id);
             vec![describe(
                 table,
                 node.child(Step::Deref),
                 "*".into(),
                 0,
-                *inner,
+                inner,
             )]
         }
         Some(TypeDef::Array {
@@ -649,10 +765,21 @@ fn resolve_with_memory<'e>(
             if live && address == 0 {
                 return Err(bad("null pointer".into()));
             }
+            let payload =
+                shared_payload(table, at.type_id, *inner).map_err(|reason| bad(reason.into()))?;
+            let (address, type_id) = match payload {
+                Some(member) => (
+                    address
+                        .checked_add(member.offset)
+                        .ok_or_else(|| bad("payload address overflow".into()))?,
+                    member.type_id,
+                ),
+                None => (address, *inner),
+            };
             at = Resolved {
                 label: "*".into(),
                 address,
-                type_id: *inner,
+                type_id,
                 bit_offset: None,
                 bit_size: None,
                 discr_value: None,
@@ -929,6 +1056,11 @@ pub(crate) fn describe(
         size: table.type_size(type_id),
         type_name: table.type_name(type_id),
         wrapper: (type_id != outer).then(|| table.type_name(outer)),
+        wrappers: recognized_wrappers(table, outer),
+        pointee_type: match underlying {
+            Some(TypeDef::Pointer(inner) | TypeDef::Reference(inner)) => Some(*inner),
+            _ => None,
+        },
         kind,
         scalar,
         sequence: sequence(table, outer).is_some(),

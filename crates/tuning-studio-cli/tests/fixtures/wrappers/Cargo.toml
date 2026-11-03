@@ -1,0 +1,13 @@
+[package]
+name = "wrapper_fixture"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[profile.release]
+debug = 2
+opt-level = 1
+panic = "abort"
+strip = "none"

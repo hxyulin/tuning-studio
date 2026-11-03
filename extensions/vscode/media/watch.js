@@ -15,11 +15,11 @@
   /**
    * @typedef {{ text: string, full: string, reason: string, error: string, writable: boolean,
    *   suggest: boolean, number: number | undefined, watch: string | undefined, depth: number, parent: string | undefined,
-   *   label: string | undefined, expandable: boolean }} Info
+   *   label: string | undefined, expandable: boolean, indirect: boolean }} Info
    * @typedef {{ path: string, item: HTMLElement, row: HTMLElement, value: HTMLElement,
    *   more: HTMLButtonElement, toggle: HTMLButtonElement, name: HTMLElement, detail: HTMLElement, message: HTMLElement,
    *   input: HTMLInputElement | undefined, info: Info, pending: boolean, settling: boolean,
-   *   writeError: string, showDetail: boolean }} Row
+   *   writeError: string, expansionError: string, showDetail: boolean }} Row
    */
   /** @type {Map<string, Row>} */
   const rows = new Map();
@@ -35,6 +35,7 @@
   /** @type {{ element: HTMLElement, row: Row } | undefined} */
   let menu;
   let ids = 0;
+  const requested = new Set();
 
   /** @param {string} type @param {string} path @param {string} [input] */
   const send = (type, path, input = '') => host.postMessage({ type, path, input });
@@ -96,8 +97,8 @@
     item.append(row, message, detail);
     /** @type {Row} */
     const r = {
-      path, item, row, value, more, toggle, name, detail, message, input: undefined, pending: false, settling: false, writeError: '', showDetail: false,
-      info: { text: '', full: '', reason: '', error: '', writable: false, suggest: false, number: undefined, watch: undefined, depth: 0, parent: undefined, label: undefined, expandable: false },
+      path, item, row, value, more, toggle, name, detail, message, input: undefined, pending: false, settling: false, writeError: '', expansionError: '', showDetail: false,
+      info: { text: '', full: '', reason: '', error: '', writable: false, suggest: false, number: undefined, watch: undefined, depth: 0, parent: undefined, label: undefined, expandable: false, indirect: false },
     };
     value.addEventListener('click', () => startEdit(r));
     toggle.addEventListener('click', event => { event.stopPropagation(); toggleExpanded(r); });
@@ -138,7 +139,7 @@
     r.item.classList.toggle('failed', !!r.writeError);
     const state = info.error ? 'unavailable' : info.writable ? 'editable' : 'read-only';
     r.item.setAttribute('aria-label', `${r.path}, ${info.text}, ${state}${r.writeError ? ', last write failed' : ''}`);
-    r.detail.textContent = [info.error || info.reason, r.writeError && `Last write failed: ${r.writeError}`].filter(Boolean).join('\n');
+    r.detail.textContent = [info.error || info.reason, r.writeError && `Last write failed: ${r.writeError}`, r.expansionError].filter(Boolean).join('\n');
     r.detail.hidden = !r.showDetail;
   }
 
@@ -262,7 +263,14 @@
   /** @param {Row} r */
   function toggleExpanded(r) {
     if (!r.info.expandable) return;
+    if (r.expansionError) r.showDetail = false;
+    r.expansionError = '';
     if (expanded.has(r.path)) expanded.delete(r.path); else expanded.add(r.path);
+    if (r.info.indirect) {
+      const open = expanded.has(r.path);
+      if (open) requested.add(r.path); else requested.delete(r.path);
+      send('expand', r.path, String(open));
+    }
     host.setState?.({ expanded: [...expanded].slice(0, 1000) });
     render(r);
     updateVisibility();
@@ -430,14 +438,18 @@
         number: typeof value.number === 'number' ? value.number : undefined,
         watch: watchOf(value.path, watches),
         depth, parent, label: typeof value.label === 'string' ? value.label : undefined,
-        expandable: children.length > 0,
+        expandable: children.length > 0 || (value.expandable === true && !error),
+        indirect: value.expandable === true,
       });
+      if (value.expandable === true && expanded.has(value.path) && !requested.has(value.path)) {
+        requested.add(value.path); send('expand', value.path, 'true');
+      }
       for (const child of children) visit(child, depth + 1, value.path);
     };
     for (const value of m.values) visit(value);
     for (const entry of m.errors) {
       if (!entry || typeof entry.path !== 'string' || !entry.error || next.has(entry.path)) continue;
-      next.set(entry.path, { text: entry.error, full: '', reason: '', error: entry.error, writable: false, suggest: false, number: undefined, watch: entry.path, depth: 0, parent: undefined, label: undefined, expandable: false });
+      next.set(entry.path, { text: entry.error, full: '', reason: '', error: entry.error, writable: false, suggest: false, number: undefined, watch: entry.path, depth: 0, parent: undefined, label: undefined, expandable: false, indirect: false });
     }
     for (const [path, r] of rows) {
       if (next.has(path)) continue;
@@ -469,6 +481,16 @@
   window.addEventListener('message', event => {
     const m = event.data;
     if (!m || typeof m !== 'object') return;
+    if (m.type === 'expansionReply') {
+      const r = rows.get(m.path);
+      if (r && m.ok === false) {
+        expanded.delete(r.path); requested.delete(r.path);
+        host.setState?.({ expanded: [...expanded].slice(0, 1000) });
+        r.expansionError = typeof m.text === 'string' ? m.text : 'Expansion failed';
+        r.showDetail = true; render(r); updateVisibility();
+      }
+      return;
+    }
     if (m.type === 'reply') { const r = rows.get(m.path); if (r && r.pending) onReply(r, m); return; }
     if (m.type === 'edit') { const r = rows.get(m.path); if (r) { r.item.focus(); startEdit(r); } return; }
     if (m.type !== 'values' || !Array.isArray(m.values) || !Array.isArray(m.watches) || !Array.isArray(m.errors)) return;

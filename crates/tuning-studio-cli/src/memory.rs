@@ -55,6 +55,11 @@ pub trait Memory {
         Ok(())
     }
 
+    /// Keep parent bytes while adding pointee snapshots during one inspection.
+    fn retain_snapshots(&mut self) {
+        self.snapshots().batch = true;
+    }
+
     /// Drop every snapshot, so later reads go to the target.
     fn forget(&mut self) {
         *self.snapshots() = Snapshots::default();

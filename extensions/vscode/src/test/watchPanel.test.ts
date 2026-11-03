@@ -230,9 +230,10 @@ test('the host never writes a read-only value and drops a duplicate write', asyn
     exports,
     require: (name: string) => name === 'vscode' ? vscode : require(name.startsWith('./') ? path.join(__dirname, '..', name) : name),
   });
-  const values = [setpoint(100), speed].map(({ reason: _, ...v }) => v);
+  const values = [setpoint(100), speed, { ...speed, path: 'BOXED', expandable: true }].map(({ reason: _, ...v }) => v);
   const removed: string[] = [];
-  const watch = { declared: values, watchedValues: new Map(), watched: ['missing'], lookup: (p: string) => values.find(v => v.path === p), removeWatch: async (p: string) => { removed.push(p); } };
+  const expansions: [string, boolean][] = [];
+  const watch = { declared: values, watchedValues: new Map(), watched: ['missing'], lookup: (p: string) => values.find(v => v.path === p), removeWatch: async (p: string) => { removed.push(p); }, setExpanded: async (p: string, value: boolean) => { expansions.push([p, value]); } };
   const writes: string[] = [];
   let finish: () => void = () => {};
   const suggested: string[] = [];
@@ -257,6 +258,11 @@ test('the host never writes a read-only value and drops a duplicate write', asyn
   assert.doesNotMatch(view.webview.html, /https?:/);
   assert.doesNotMatch(view.webview.html, />(Apply|Add watch)</);
 
+  await handler({ type: 'expand', path: 'BOXED', input: 'true' });
+  await handler({ type: 'expand', path: 'motor.speed', input: 'true' });
+  await handler({ type: 'expand', path: 'unknown', input: 'true' });
+  await handler({ type: 'expand', path: 'BOXED', input: 'invalid' });
+  assert.deepEqual(expansions, [['BOXED', true]]);
   await handler({ type: 'write', path: 'motor.speed', input: '1' });
   assert.deepEqual(writes, []);
   assert.deepEqual(replies, [{ type: 'reply', path: 'motor.speed', ok: false, text: 'watch! publishes a read-only snapshot. Use watch_mut! with a mutable scalar to accept edits.' }]);
@@ -339,4 +345,36 @@ test('writable struct fields keep inline edits through polls; collapsing cancels
   assert.equal(child.hidden, true);
   assert.equal(child.byClass('edit').length, 0);
   assert.equal(ui.writes().length, 1);
+});
+
+
+test('pointer arrows request pointees lazily and restore their open state', () => {
+  const pointer = { path: 'BOXED', type: 'Box<Controller>', kind: 'raw', writable: false, display: 'BOXED: Box<Controller> = 0x20000000', expandable: true };
+  const initial = { type: 'values', message: '', values: [pointer], watches: ['BOXED'], errors: [] };
+  const loaded = { ...initial, values: [{ ...pointer, children: [{ path: 'BOXED.*', label: '*', type: 'Controller', kind: 'raw', writable: false, display: 'BOXED.*: Controller', children: [
+    { ...setpoint(2), path: 'BOXED.*.kp', label: 'kp', kind: 'raw' },
+  ] }] }] };
+  const ui = loadWebview();
+  ui.deliver(initial);
+  assert.equal(ui.row('BOXED').getAttribute('aria-expanded'), 'false');
+  assert.equal(ui.posted.filter(m => m.type === 'expand').length, 0);
+  ui.row('BOXED').key('ArrowRight');
+  assert.deepEqual(ui.posted.filter(m => m.type === 'expand'), [{ type: 'expand', path: 'BOXED', input: 'true' }]);
+  ui.deliver(loaded);
+  assert.equal(ui.row('BOXED.*').hidden, false);
+  assert.equal(ui.row('BOXED.*.kp').hidden, true);
+  ui.row('BOXED.*').key('ArrowRight');
+  assert.equal(ui.row('BOXED.*.kp').hidden, false);
+  assert.equal(ui.posted.filter(m => m.type === 'expand').length, 1, 'inline struct expansion needs no extra read');
+  const reopened = loadWebview(ui.savedState());
+  reopened.deliver(initial); reopened.deliver(initial);
+  assert.equal(reopened.posted.filter(m => m.type === 'expand').length, 1, 'restored pointer expansion is requested once');
+  reopened.deliver({ type: 'expansionReply', path: 'BOXED', ok: false, text: 'Pointer expansion limit (64)' });
+  assert.equal(reopened.row('BOXED').getAttribute('aria-expanded'), 'false');
+  assert.match(reopened.row('BOXED').byClass('detail')[0].textContent, /limit \(64\)/);
+  ui.row('BOXED').key('ArrowLeft');
+  assert.equal(ui.row('BOXED.*').hidden, true);
+  assert.deepEqual(ui.posted.filter(m => m.type === 'expand').at(-1), { type: 'expand', path: 'BOXED', input: 'false' });
+  ui.deliver(initial);
+  assert.equal(ui.posted.filter(m => m.type === 'expand').length, 2);
 });

@@ -448,8 +448,12 @@ fn handle(
     match command {
         SessionCommand::Action(Action::Reset(_) | Action::Flash { .. }) => unreachable!(),
         SessionCommand::Action(Action::Inspect(args)) => {
-            *out +=
-                &crate::inspect::inspect(elf, &mut target.memory(&mut session)?, &args.locations)?;
+            *out += &crate::inspect::inspect_expanded(
+                elf,
+                &mut target.memory(&mut session)?,
+                &args.locations,
+                &args.expansions,
+            )?;
         }
         SessionCommand::Action(Action::Read(ReadArgs { locations })) => {
             let mut memory = target.memory(&mut session)?;
@@ -903,9 +907,13 @@ mod tests {
                 duration: 2000,
             }),
             Action::Values,
-            Action::Inspect(crate::action::InspectArgs { locations: vec![] }),
+            Action::Inspect(crate::action::InspectArgs {
+                locations: vec![],
+                expansions: vec![],
+            }),
             Action::Inspect(crate::action::InspectArgs {
                 locations: strings(&["pool[task 0].future", "--odd"]),
+                expansions: strings(&["CONTROL.ptr", "CONTROL.ptr.*.next"]),
             }),
             Action::Set(SetArgs {
                 location: "a.b".into(),

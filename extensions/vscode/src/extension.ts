@@ -485,7 +485,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     watch.onDidChange(updateWatchView),
     watch.onDidSample((sample) => plotView.append(sample.time, plot.record(sample))),
-    plot.onDidChangeSelection(() => watchTree.refresh()),
+    plot.onDidChangeSelection(() => { watchTree.refresh(); watch.setPlotted(plot.paths); }),
     sessionView.onDidChangeVisibility(updateMonitoring),
     watchView.onDidChangeVisibility(updateMonitoring),
     tasksView.onDidChangeVisibility(updateMonitoring),
@@ -506,6 +506,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidChangeWorkspaceFolders(() => void refreshPlan()),
   );
 
+  watch.setPlotted(plot.paths);
   updateStatusItem(session.state);
   updateWatchView();
   void refreshPlan();

@@ -6,10 +6,9 @@ function probeArgs(probe: string): string[] {
   return probe.trim() ? ['--probe', probe.trim()] : [];
 }
 
-export function inspectArgs(probe: string, locations: readonly string[] = []): string[] {
-  return locations.length > 0
-    ? ['inspect', ...probeArgs(probe), '--', ...locations]
-    : ['inspect', ...probeArgs(probe)];
+export function inspectArgs(probe: string, locations: readonly string[] = [], expansions: readonly string[] = []): string[] {
+  const args = ['inspect', ...probeArgs(probe), ...expansions.flatMap(path => ['--expand', path])];
+  return locations.length > 0 ? [...args, '--', ...locations] : args;
 }
 
 export function setArgs(probe: string, location: string, value: string): string[] {

@@ -13,6 +13,7 @@ mod target;
 mod tasks;
 mod trace;
 mod value;
+mod wrappers;
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand};
@@ -390,10 +391,11 @@ fn main() -> Result<()> {
             let mut session = probe.session.lock();
             print!(
                 "{}",
-                inspect::inspect(
+                inspect::inspect_expanded(
                     elf.as_ref(),
                     &mut probe.memory(&mut session)?,
-                    &args.locations
+                    &args.locations,
+                    &args.expansions
                 )?
             );
         }
@@ -734,7 +736,10 @@ fn set(
                     node.type_name
                 );
             };
-            // Behind a pointer the target section is unknown, so only direct fields are checked.
+            if let Some(reason) = wrappers::write_restriction(elf, memory, node)? {
+                bail!("{path}: {reason}");
+            }
+            // The original symbol section also constrains direct fields.
             let direct = !node
                 .node
                 .steps
@@ -764,7 +769,8 @@ fn set(
     };
     let task_local = matches!(location, Location::Node(node)
         if node.node.steps.iter().any(|step| matches!(step, Step::Task(_))));
-    if task_local {
+    let atomic = matches!(location, Location::Node(node) if wrappers::atomic(node));
+    if task_local || atomic {
         memory.write_single_access(address, &bytes)?;
     } else {
         memory.write(address, &bytes)?;

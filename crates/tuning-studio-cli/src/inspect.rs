@@ -8,9 +8,9 @@ use studio_dwarf::{ElfInfo, VariableType};
 use crate::api::{self, Kind};
 use crate::memory::Memory;
 use crate::path::{self, Location};
-use crate::value;
+use crate::{value, wrappers};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 struct Sample {
     path: String,
     #[serde(rename = "type")]
@@ -30,6 +30,8 @@ struct Sample {
     children: Vec<Sample>,
     #[serde(skip_serializing_if = "Option::is_none")]
     children_note: Option<String>,
+    #[serde(skip_serializing_if = "is_false")]
+    expandable: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -43,12 +45,36 @@ const DEPTH_LIMIT: usize = 6;
 const NODE_LIMIT: usize = 256;
 const WATCH_REASON: &str = "watch! publishes a read-only snapshot; use watch_mut! with a mutable scalar at the task update point";
 
-/// Discover API values or sample the requested paths, preserving per-location errors.
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
+struct Expansion<'a> {
+    paths: &'a [String],
+    remaining: usize,
+    bytes: u64,
+    ancestors: Vec<(u64, String)>,
+}
+
+#[cfg(test)]
 pub fn inspect(
     elf: Option<&ElfInfo>,
     memory: &mut dyn Memory,
     locations: &[String],
 ) -> Result<String> {
+    inspect_expanded(elf, memory, locations, &[])
+}
+
+/// Discover API values or sample the requested paths, preserving per-location errors.
+pub fn inspect_expanded(
+    elf: Option<&ElfInfo>,
+    memory: &mut dyn Memory,
+    locations: &[String],
+    expansions: &[String],
+) -> Result<String> {
+    if expansions.len() > 64 || expansions.iter().any(|path| path.len() > 1024) {
+        bail!("at most 64 expansion paths of up to 1024 bytes are supported");
+    }
     memory.forget();
     let declarations = elf
         .map(|elf| api::declared(elf, memory))
@@ -59,7 +85,13 @@ pub fn inspect(
             .into_iter()
             .map(|(_, node)| {
                 let path = node.path.clone();
-                sample_location(Some(elf), memory, path, Ok(Location::Node(Box::new(node))))
+                sample_location(
+                    Some(elf),
+                    memory,
+                    path,
+                    Ok(Location::Node(Box::new(node))),
+                    expansions,
+                )
             })
             .collect::<Vec<_>>()
     } else {
@@ -69,7 +101,7 @@ pub fn inspect(
                 let location = path::locate(elf, memory, text);
                 // An exact exported symbol wins over a logical field with the same name.
                 if matches!(&location, Ok(Location::Node(node)) if node.node.steps.is_empty()) {
-                    return sample_location(elf, memory, text.clone(), location);
+                    return sample_location(elf, memory, text.clone(), location, expansions);
                 }
                 // Logical watch fields omit mailbox storage (e.g. motor.state.speed).
                 // Read their owning snapshot once, rather than sampling its backing field.
@@ -90,6 +122,7 @@ pub fn inspect(
                         memory,
                         root.path.clone(),
                         Ok(Location::Node(Box::new(root.clone()))),
+                        expansions,
                     );
                     if let Some(child) = sample.find(text) {
                         return child.clone();
@@ -99,7 +132,7 @@ pub fn inspect(
                         return sample;
                     }
                 }
-                sample_location(elf, memory, text.clone(), location)
+                sample_location(elf, memory, text.clone(), location, expansions)
             })
             .collect()
     };
@@ -111,6 +144,7 @@ fn sample_location(
     memory: &mut dyn Memory,
     text: String,
     location: Result<Location>,
+    expansions: &[String],
 ) -> Sample {
     let mut sample = Sample {
         path: text,
@@ -124,8 +158,11 @@ fn sample_location(
         label: None,
         children: Vec::new(),
         children_note: None,
+        expandable: false,
     };
-    if let Err(error) = location.and_then(|location| sample.read(elf, memory, &location)) {
+    if let Err(error) =
+        location.and_then(|location| sample.read(elf, memory, &location, expansions))
+    {
         sample.writable = false;
         sample.write_reason = Some(format!("{error:#}"));
         sample.error = Some(format!("{error:#}"));
@@ -149,7 +186,14 @@ impl Sample {
         elf: Option<&ElfInfo>,
         memory: &mut dyn Memory,
         location: &Location,
+        expansions: &[String],
     ) -> Result<()> {
+        let mut expansion = Expansion {
+            paths: expansions,
+            remaining: NODE_LIMIT,
+            bytes: 64 * 1024,
+            ancestors: Vec::new(),
+        };
         match location {
             Location::Raw { address, scalar } => {
                 self.type_name = scalar.to_string();
@@ -193,10 +237,12 @@ impl Sample {
                             }
                         }
                         self.number = node_number(memory, &value)?;
-                        let mut remaining = NODE_LIMIT;
-                        self.expand(elf, memory, &value, 0, &mut remaining)?;
+                        memory.retain_snapshots();
+                        self.expand(elf, memory, &value, 0, &mut expansion)?;
                     }
                     None => {
+                        self.type_name = wrappers::type_name(node);
+                        self.children_note = wrappers::note(elf, memory, node)?;
                         self.write_reason = write_restriction(elf, memory, node)?;
                         self.writable = self.write_reason.is_none();
                         if !node.readable {
@@ -207,8 +253,8 @@ impl Sample {
                         }
                         self.display = value::render(elf, memory, node)?;
                         self.number = node_number(memory, node)?;
-                        let mut remaining = NODE_LIMIT;
-                        self.expand(elf, memory, node, 0, &mut remaining)?;
+                        memory.retain_snapshots();
+                        self.expand(elf, memory, node, 0, &mut expansion)?;
                     }
                 }
             }
@@ -217,23 +263,48 @@ impl Sample {
         Ok(())
     }
 
-    /// Descendants use the parent's snapshot. Never follow pointers or slices here:
-    /// their pointees are outside the bytes validated by a watch's counters.
+    /// Inline descendants share a snapshot. Pointees are requested explicitly and
+    /// read separately, with bounded bytes and a final pointer stability check.
     fn expand(
         &mut self,
         elf: &ElfInfo,
         memory: &mut dyn Memory,
         node: &SymbolNode,
         depth: usize,
-        remaining: &mut usize,
+        expansion: &mut Expansion<'_>,
     ) -> Result<()> {
-        if !node.expandable || node.kind == NodeKind::Pointer || node.sequence {
+        let indirect = node.kind == NodeKind::Pointer || node.sequence;
+        self.expandable = indirect;
+        if !node.expandable && !indirect {
             return Ok(());
         }
-        if depth == DEPTH_LIMIT || *remaining == 0 {
+        if indirect && !expansion.paths.contains(&self.path) {
+            return Ok(());
+        }
+        if depth == DEPTH_LIMIT || expansion.remaining == 0 {
             self.children_note = Some("More fields omitted: inspection limit".into());
             return Ok(());
         }
+        let pointer_bytes = if indirect {
+            let size = if node.kind == NodeKind::Pointer {
+                if elf.is_64bit { 8 } else { 4 }
+            } else {
+                node.size.unwrap_or(0).min(16) as usize
+            };
+            let bytes = memory.read(node.address, size)?;
+            match wrappers::shared_counts(elf, memory, node) {
+                Ok(Some(note)) => self.add_note(&note),
+                Ok(None) => {}
+                Err(error) => {
+                    self.children.push(self.failed_child(&format!("{error:#}")));
+                    return Ok(());
+                }
+            }
+            self.add_note("Pointee · live debugger read, outside the parent's snapshot");
+            Some(bytes)
+        } else {
+            None
+        };
         let active = if node.kind == NodeKind::TaggedEnum {
             tree::preview(elf, &node.node, &mut |address, len| {
                 memory.read(address, len).map_err(|e| format!("{e:#}"))
@@ -250,10 +321,28 @@ impl Sample {
             CHILD_LIMIT,
             &mut |address, len| memory.word(address, len).map_err(|e| format!("{e:#}")),
             true,
-        )
-        .map_err(|e| anyhow!("{e}"))?;
+        );
+        let page = match page {
+            Ok(page) => page,
+            Err(error) if indirect => {
+                self.children.push(self.failed_child(&error.to_string()));
+                return Ok(());
+            }
+            Err(error) => return Err(anyhow!("{error}")),
+        };
         let shown = page.nodes.len();
+        expansion
+            .ancestors
+            .push((node.address, node.type_name.clone()));
         for child in page.nodes {
+            if node
+                .wrappers
+                .iter()
+                .any(|w| w.kind == tree::WrapperKind::RefCell)
+                && child.label != "value"
+            {
+                continue;
+            }
             if matches!(child.node.steps.last(), Some(Step::Discriminant)) {
                 continue;
             }
@@ -262,11 +351,11 @@ impl Sample {
             {
                 continue;
             }
-            if *remaining == 0 {
+            if expansion.remaining == 0 {
                 self.children_note = Some("More fields omitted: inspection limit".into());
                 break;
             }
-            *remaining -= 1;
+            expansion.remaining -= 1;
             let suffix = child
                 .path
                 .strip_prefix(&node.path)
@@ -284,8 +373,41 @@ impl Sample {
                 label: Some(child.label.clone()),
                 children: Vec::new(),
                 children_note: None,
+                expandable: child.kind == NodeKind::Pointer || child.sequence,
             };
             let read = (|| -> Result<()> {
+                let child = if node.kind == NodeKind::Pointer {
+                    path::describe(elf, memory, &child.node)?
+                } else {
+                    child
+                };
+                sample.type_name = wrappers::type_name(&child);
+                if indirect {
+                    if expansion
+                        .ancestors
+                        .contains(&(child.address, child.type_name.clone()))
+                    {
+                        sample.expandable = false;
+                        sample.children_note = Some("Cycle · already shown in an ancestor".into());
+                        sample.error.clone_from(&sample.children_note);
+                        sample.write_reason.clone_from(&sample.children_note);
+                        sample.display = format!("{}: {}", sample.path, sample.type_name);
+                        return Ok(());
+                    }
+                    let size = child
+                        .size
+                        .ok_or_else(|| anyhow!("pointee size is unknown"))?;
+                    if size > expansion.bytes {
+                        bail!(
+                            "pointee exceeds the 64 KiB inspection budget; watch a specific field"
+                        )
+                    }
+                    expansion.bytes -= size;
+                    if size > 0 {
+                        memory.snapshot(child.address, size as usize)?;
+                    }
+                }
+                sample.children_note = wrappers::note(elf, memory, &child)?;
                 if !child.readable {
                     bail!("{}", child.status.as_deref().unwrap_or("not readable"));
                 }
@@ -308,7 +430,7 @@ impl Sample {
                         .to_owned()
                 };
                 sample.number = node_number(memory, &child)?;
-                sample.expand(elf, memory, &child, depth + 1, remaining)?;
+                sample.expand(elf, memory, &child, depth + 1, expansion)?;
                 Ok(())
             })();
             if let Err(error) = read {
@@ -320,10 +442,37 @@ impl Sample {
             }
             self.children.push(sample);
         }
+        expansion.ancestors.pop();
+        if let Some(bytes) = pointer_bytes
+            && memory.transfer(node.address, bytes.len())? != bytes
+        {
+            self.children = vec![self.failed_child("Pointer changed during read")];
+        }
         if page.total > shown as u64 {
-            self.children_note = Some(format!("First {shown} of {} fields", page.total));
+            self.add_note(&format!("First {shown} of {} fields", page.total));
         }
         Ok(())
+    }
+
+    fn add_note(&mut self, text: &str) {
+        match &mut self.children_note {
+            Some(note) => {
+                note.push('\n');
+                note.push_str(text);
+            }
+            None => self.children_note = Some(text.into()),
+        }
+    }
+
+    fn failed_child(&self, text: &str) -> Self {
+        Self {
+            path: format!("{}.*", self.path),
+            label: Some("*".into()),
+            kind: self.kind,
+            error: Some(text.into()),
+            write_reason: Some(text.into()),
+            ..Self::default()
+        }
     }
 }
 
@@ -370,6 +519,9 @@ fn write_restriction(
     };
     if reason.is_some() {
         return Ok(reason);
+    }
+    if let Some(reason) = wrappers::write_restriction(elf, memory, node)? {
+        return Ok(Some(reason));
     }
     let indirect = node
         .node
@@ -556,6 +708,7 @@ mod tests {
             &mut memory,
             root.path.clone(),
             Ok(Location::Node(Box::new(root))),
+            &[],
         );
         assert!(memory.changed);
         assert_eq!(sample.find("motor.state.speed").unwrap().number, Some(7.0));
@@ -695,5 +848,387 @@ mod tests {
                 .unwrap()
                 .contains("null pointer")
         );
+    }
+
+    const WRAPPERS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/wrappers.elf");
+
+    fn wrapper_node(elf: &ElfInfo, memory: &mut dyn Memory, name: &str) -> SymbolNode {
+        let Location::Node(node) =
+            path::locate(Some(elf), memory, &format!("wrapper_fixture::{name}")).unwrap()
+        else {
+            panic!("expected node")
+        };
+        *node
+    }
+
+    fn shared_allocation(elf: &ElfInfo, memory: &mut Fake, name: &str, offset: u64) -> SymbolNode {
+        let root = wrapper_node(elf, memory, name);
+        let heap = wrapper_node(elf, memory, "HEAP");
+        let address = heap.address + offset;
+        memory
+            .write(root.address, &(address as u32).to_le_bytes())
+            .unwrap();
+        let header = tree::NodeRef::typed("allocation", address, root.pointee_type.unwrap());
+        for (name, count) in [("strong", 2u32), ("weak", 2u32)] {
+            let counter =
+                path::describe(elf, memory, &header.child(Step::Member(name.into()))).unwrap();
+            memory.write(counter.address, &count.to_le_bytes()).unwrap();
+        }
+        let mut payload = ["data", "value"]
+            .into_iter()
+            .find_map(|name| {
+                path::describe(elf, memory, &header.child(Step::Member(name.into()))).ok()
+            })
+            .unwrap();
+        if payload
+            .wrappers
+            .iter()
+            .any(|w| w.kind == tree::WrapperKind::RefCell)
+        {
+            payload = path::describe(
+                elf,
+                memory,
+                &payload.node.child(Step::Member("value".into())),
+            )
+            .unwrap();
+        }
+        memory.write(payload.address, &7u32.to_le_bytes()).unwrap();
+        if payload.size.unwrap_or(0) > 4 {
+            memory
+                .write(payload.address + 4, &0.5f32.to_le_bytes())
+                .unwrap();
+        }
+        root
+    }
+
+    fn expanded(
+        elf: &ElfInfo,
+        memory: &mut dyn Memory,
+        name: &str,
+        paths: &[&str],
+    ) -> serde_json::Value {
+        let root = format!("wrapper_fixture::{name}");
+        let paths = paths
+            .iter()
+            .map(|p| format!("wrapper_fixture::{p}"))
+            .collect::<Vec<_>>();
+        serde_json::from_str(&inspect_expanded(Some(elf), memory, &[root], &paths).unwrap())
+            .unwrap()
+    }
+
+    #[test]
+    fn atomic_and_cell_values_keep_their_types_and_write_policies() {
+        let elf = ElfParser::parse(WRAPPERS).unwrap();
+        let mut memory = Fake::from_elf(WRAPPERS);
+        for (name, number, expected) in
+            [("ATOMIC", 42.0, "Atomic<u32>"), ("CELL", 9.0, "Cell<u32>")]
+        {
+            let sample = expanded(&elf, &mut memory, name, &[]);
+            assert_eq!(sample["values"][0]["type"], expected);
+            assert_eq!(sample["values"][0]["number"].as_f64(), Some(number));
+            assert_eq!(sample["values"][0]["writable"], true);
+        }
+        let flag = expanded(&elf, &mut memory, "FLAG", &[]);
+        assert!(
+            flag["values"][0]["display"]
+                .as_str()
+                .unwrap()
+                .contains("true")
+        );
+        assert!(
+            crate::set_and_read(Some(&elf), &mut memory, "wrapper_fixture::FLAG", "2").is_err()
+        );
+        crate::set_and_read(Some(&elf), &mut memory, "wrapper_fixture::ATOMIC", "50").unwrap();
+        crate::set_and_read(Some(&elf), &mut memory, "wrapper_fixture::CELL", "11").unwrap();
+        assert_eq!(
+            expanded(&elf, &mut memory, "ATOMIC", &[])["values"][0]["number"],
+            50.0
+        );
+        assert_eq!(
+            expanded(&elf, &mut memory, "CELL", &[])["values"][0]["number"],
+            11.0
+        );
+    }
+
+    #[test]
+    fn box_pin_nonnull_and_references_expand_only_when_requested() {
+        let elf = ElfParser::parse(WRAPPERS).unwrap();
+        let mut memory = Fake::from_elf(WRAPPERS);
+        let data = wrapper_node(&elf, &mut memory, "DATA");
+        for name in ["BOXED", "PINNED", "NONNULL", "REFERENCE", "MUT_REFERENCE"] {
+            let root = wrapper_node(&elf, &mut memory, name);
+            memory
+                .write(root.address, &(data.address as u32).to_le_bytes())
+                .unwrap();
+            let collapsed = expanded(&elf, &mut memory, name, &[]);
+            assert_eq!(collapsed["values"][0]["expandable"], true);
+            assert!(collapsed["values"][0].get("children").is_none());
+            let shown = expanded(&elf, &mut memory, name, &[name]);
+            assert_eq!(shown["values"][0]["children"][0]["label"], "*");
+            let fields = shown["values"][0]["children"][0]["children"]
+                .as_array()
+                .unwrap();
+            let count = fields.iter().find(|f| f["label"] == "count").unwrap();
+            assert_eq!(count["number"], 7.0, "{name}: {shown}");
+            assert_eq!(
+                count["writable"],
+                matches!(name, "BOXED" | "PINNED" | "MUT_REFERENCE"),
+                "{name}: {shown}"
+            );
+        }
+        crate::set_and_read(
+            Some(&elf),
+            &mut memory,
+            "wrapper_fixture::BOXED.*.gain",
+            "0.75",
+        )
+        .unwrap();
+        assert!(
+            crate::set_and_read(
+                Some(&elf),
+                &mut memory,
+                "wrapper_fixture::REFERENCE.*.gain",
+                "0.2"
+            )
+            .is_err()
+        );
+        // A collapsed invalid pointer never reads its pointee.
+        let root = wrapper_node(&elf, &mut memory, "BOXED");
+        memory
+            .write(root.address, &0xFFFF_F000u32.to_le_bytes())
+            .unwrap();
+        assert!(
+            expanded(&elf, &mut memory, "BOXED", &[])["values"][0]
+                .get("error")
+                .is_none()
+        );
+        assert!(
+            expanded(&elf, &mut memory, "BOXED", &["BOXED"])["values"][0]["children"][0]["error"]
+                .is_string()
+        );
+        memory.write(root.address, &0u32.to_le_bytes()).unwrap();
+        assert!(
+            expanded(&elf, &mut memory, "BOXED", &["BOXED"])["values"][0]["children"][0]["error"]
+                .as_str()
+                .unwrap()
+                .contains("null")
+        );
+    }
+
+    #[test]
+    fn arc_and_rc_show_payloads_and_counts_without_editable_bookkeeping() {
+        let elf = ElfParser::parse(WRAPPERS).unwrap();
+        let mut memory = Fake::from_elf(WRAPPERS);
+        for (name, offset) in [("ARC", 0), ("RC", 64)] {
+            shared_allocation(&elf, &mut memory, name, offset);
+            let shown = expanded(&elf, &mut memory, name, &[name]);
+            assert!(
+                shown["values"][0]["children_note"]
+                    .as_str()
+                    .unwrap()
+                    .contains("strong 2 · weak 1")
+            );
+            let payload = &shown["values"][0]["children"][0];
+            let fields = payload["children"].as_array().unwrap();
+            assert!(
+                fields
+                    .iter()
+                    .all(|f| f["label"] != "strong" && f["label"] != "weak")
+            );
+            let count = fields.iter().find(|f| f["label"] == "count").unwrap();
+            assert_eq!(count["number"], 7.0, "{shown}");
+            assert_eq!(count["writable"], false);
+            assert!(
+                crate::set_and_read(
+                    Some(&elf),
+                    &mut memory,
+                    &format!("wrapper_fixture::{name}.*.count"),
+                    "4"
+                )
+                .is_err()
+            );
+        }
+        let raw_count = "wrapper_fixture::ARC.ptr.pointer.*.strong";
+        assert!(path::locate(Some(&elf), &mut memory, raw_count).is_ok());
+        assert!(
+            crate::set_and_read(Some(&elf), &mut memory, raw_count, "4")
+                .unwrap_err()
+                .to_string()
+                .contains("bookkeeping")
+        );
+        shared_allocation(&elf, &mut memory, "ARC_ATOMIC", 128);
+        let shown = expanded(&elf, &mut memory, "ARC_ATOMIC", &["ARC_ATOMIC"]);
+        assert_eq!(shown["values"][0]["children"][0]["number"], 7.0, "{shown}");
+        assert_eq!(shown["values"][0]["children"][0]["writable"], true);
+        crate::set_and_read(
+            Some(&elf),
+            &mut memory,
+            "wrapper_fixture::ARC_ATOMIC.*",
+            "9",
+        )
+        .unwrap();
+        assert_eq!(
+            expanded(&elf, &mut memory, "ARC_ATOMIC", &["ARC_ATOMIC"])["values"][0]["children"][0]
+                ["number"],
+            9.0
+        );
+        shared_allocation(&elf, &mut memory, "RC_REFCELL", 192);
+        crate::set_and_read(
+            Some(&elf),
+            &mut memory,
+            "wrapper_fixture::RC_REFCELL.*.value.count",
+            "12",
+        )
+        .unwrap();
+        let borrow = wrapper_node(&elf, &mut memory, "RC_REFCELL.*.borrow");
+        memory.write(borrow.address, &1u32.to_le_bytes()).unwrap();
+        assert!(
+            crate::set_and_read(
+                Some(&elf),
+                &mut memory,
+                "wrapper_fixture::RC_REFCELL.*.value.count",
+                "13"
+            )
+            .is_err()
+        );
+        let weak = wrapper_node(&elf, &mut memory, "WEAK");
+        let heap = wrapper_node(&elf, &mut memory, "HEAP");
+        memory
+            .write(weak.address, &(heap.address as u32).to_le_bytes())
+            .unwrap();
+        let shown = expanded(&elf, &mut memory, "WEAK", &["WEAK"]);
+        assert!(
+            shown["values"][0]["children"][0]["error"]
+                .as_str()
+                .unwrap()
+                .contains("weak pointer")
+        );
+    }
+
+    #[test]
+    fn refcell_hides_borrow_storage_and_blocks_edits_during_a_borrow() {
+        let elf = ElfParser::parse(WRAPPERS).unwrap();
+        let mut memory = Fake::from_elf(WRAPPERS);
+        let shown = expanded(&elf, &mut memory, "REFCELL", &[]);
+        assert_eq!(shown["values"][0]["children"].as_array().unwrap().len(), 1);
+        assert_eq!(shown["values"][0]["children"][0]["label"], "value");
+        crate::set_and_read(
+            Some(&elf),
+            &mut memory,
+            "wrapper_fixture::REFCELL.value.gain",
+            "0.8",
+        )
+        .unwrap();
+        assert!(
+            crate::set_and_read(
+                Some(&elf),
+                &mut memory,
+                "wrapper_fixture::REFCELL.borrow",
+                "1"
+            )
+            .is_err()
+        );
+        let borrow = wrapper_node(&elf, &mut memory, "REFCELL.borrow");
+        memory.write(borrow.address, &1u32.to_le_bytes()).unwrap();
+        let shown = expanded(&elf, &mut memory, "REFCELL", &[]);
+        assert!(
+            shown["values"][0]["children_note"]
+                .as_str()
+                .unwrap()
+                .contains("borrowed")
+        );
+        assert!(
+            shown["values"][0]["children"][0]["children"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|f| f["writable"] == false)
+        );
+        assert!(
+            crate::set_and_read(
+                Some(&elf),
+                &mut memory,
+                "wrapper_fixture::REFCELL.value.gain",
+                "0.1"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn pointer_cycles_stop_at_the_existing_ancestor() {
+        let elf = ElfParser::parse(WRAPPERS).unwrap();
+        let mut memory = Fake::from_elf(WRAPPERS);
+        let root = wrapper_node(&elf, &mut memory, "CYCLE");
+        let next = wrapper_node(&elf, &mut memory, "CYCLE.next");
+        memory
+            .write(next.address, &(root.address as u32).to_le_bytes())
+            .unwrap();
+        let shown = expanded(&elf, &mut memory, "CYCLE", &["CYCLE.next"]);
+        let next = shown["values"][0]["children"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["label"] == "next")
+            .unwrap();
+        assert!(
+            next["children"][0]["children_note"]
+                .as_str()
+                .unwrap()
+                .contains("Cycle")
+        );
+        assert!(next["children"][0].get("children").is_none());
+        assert!(next["children"][0].get("expandable").is_none());
+    }
+    #[test]
+    fn a_changed_pointer_discards_every_pointee_sample() {
+        struct Flip {
+            memory: Fake,
+            trigger: u64,
+            slot: u64,
+            replacement: u32,
+            flipped: bool,
+        }
+        impl Memory for Flip {
+            fn transfer(&mut self, address: u64, len: usize) -> Result<Vec<u8>> {
+                let bytes = self.memory.transfer(address, len)?;
+                if address == self.trigger && !self.flipped {
+                    self.memory
+                        .write(self.slot, &self.replacement.to_le_bytes())?;
+                    self.flipped = true;
+                }
+                Ok(bytes)
+            }
+            fn write(&mut self, address: u64, bytes: &[u8]) -> Result<()> {
+                self.memory.write(address, bytes)
+            }
+            fn snapshots(&mut self) -> &mut crate::memory::Snapshots {
+                self.memory.snapshots()
+            }
+            fn ram(&self) -> &[std::ops::Range<u64>] {
+                self.memory.ram()
+            }
+        }
+        let elf = ElfParser::parse(WRAPPERS).unwrap();
+        let mut memory = Fake::from_elf(WRAPPERS);
+        let data = wrapper_node(&elf, &mut memory, "DATA");
+        let boxed = wrapper_node(&elf, &mut memory, "BOXED");
+        let heap = wrapper_node(&elf, &mut memory, "HEAP");
+        memory
+            .write(boxed.address, &(data.address as u32).to_le_bytes())
+            .unwrap();
+        let mut memory = Flip {
+            memory,
+            trigger: data.address,
+            slot: boxed.address,
+            replacement: heap.address as u32,
+            flipped: false,
+        };
+        let shown = expanded(&elf, &mut memory, "BOXED", &["BOXED"]);
+        assert!(memory.flipped);
+        let child = &shown["values"][0]["children"][0];
+        assert_eq!(child["error"], "Pointer changed during read");
+        assert!(child.get("number").is_none());
+        assert!(child.get("children").is_none());
     }
 }
