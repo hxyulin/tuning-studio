@@ -1,7 +1,7 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { Cli } from './cli';
-import { parseCompletions } from './completions';
+import { watchSuggestions } from './completions';
 import { Failure, parseProbeList, setArgs, tasksArgs } from './cliText';
 import { InspectValue, flattenValues, rawValue } from './inspect';
 import { LiveWatch } from './liveWatch';
@@ -49,12 +49,14 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     return { ok: true, text: result.stdout.trim() || 'Write sent. The next read shows the current value.' };
   }, p => { void suggestMutableWatch(p); }, context.workspaceState, async query => {
-    const elf = sessionTree.plan?.elf?.value;
-    if (!session.isReady && !elf) return { items: [], message: 'Run firmware or select an ELF for suggestions' };
-    const target = session.isReady ? (settings.probe() ? ['--probe', settings.probe()] : []) : ['--elf', elf!];
-    const result = await cli.run(['complete', ...target, '--', query], { timeoutMs: 5000 });
-    if (!result.ok) return { items: [], message: result.failure.message };
-    return { items: parseCompletions(result.stdout) };
+    return watchSuggestions(
+      async args => {
+        const result = await cli.run(args, { timeoutMs: 5000 });
+        if (!result.ok) log.appendLine(`Watch suggestions (${settings.executable()}): ${result.failure.message}`);
+        return result;
+      }, query,
+      { live: session.isReady, probe: settings.probe(), elf: sessionTree.plan?.elf?.value },
+    );
   });
   const tasksView = vscode.window.createTreeView('tuningStudio.tasks', {
     treeDataProvider: tasksTree,

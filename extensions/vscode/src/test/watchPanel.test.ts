@@ -508,3 +508,16 @@ test('watch names drag their full paths', () => {
   assert.equal(payload.get('text/plain'), 'motor.speed');
   assert.equal(transfer.effectAllowed, 'copy');
 });
+
+test('horizontal scrolling inside a long watch input does not cancel suggestions', () => {
+  const h = loadWebview();
+  const input = h.doc.getElementById('location')!;
+  input.focus(); input.value = 'hku_target_vehicle_board::control::POOL[task 0].future.';
+  input.dispatch('input'); input.dispatch('scroll'); h.flushTimers();
+  const request = h.posted.filter(m => m.type === 'complete').at(-1)!;
+  assert.equal(request.query, input.value);
+  h.deliver({ type: 'completions', id: request.id, query: input.value, items: [{ path: input.value + '#3', label: 'Suspend0', type: 'Suspend0' }] });
+  const suggestions = h.doc.getElementById('watch-suggestions')!;
+  assert.equal(suggestions.hidden, false);
+  input.dispatch('scroll'); assert.equal(suggestions.hidden, false);
+});

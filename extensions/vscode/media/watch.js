@@ -549,7 +549,9 @@
       const item = el('div', 'suggestion');
       item.id = `suggestion-${i}`; item.title = `${option.path}\n${option.type}`;
       item.setAttribute('role', 'option'); item.setAttribute('aria-selected', 'false');
-      item.append(el('span', 'suggestion-path', option.path), el('span', 'suggestion-type', option.type));
+      const pathLabel = el('span', 'suggestion-path');
+      const pathText = el('bdi', '', option.path); pathText.dir = 'ltr'; pathLabel.append(pathText);
+      item.append(pathLabel, el('span', 'suggestion-type', option.type));
       item.addEventListener('mousedown', event => event.preventDefault());
       item.addEventListener('click', () => { chosen = i; acceptSuggestion(); });
       suggestions.append(item);
@@ -627,6 +629,6 @@
   });
   window.addEventListener('blur', hideSuggestions);
   window.addEventListener('resize', hideSuggestions);
-  document.addEventListener('scroll', event => { if (!suggestions.contains(/** @type {Node} */ (event.target))) hideSuggestions(); }, true);
+  document.addEventListener('scroll', event => { if (event.target !== addInput && !suggestions.contains(/** @type {Node} */ (event.target))) hideSuggestions(); }, true);
   host.postMessage({ type: 'ready' });
 })();

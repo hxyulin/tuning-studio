@@ -106,6 +106,13 @@ list` and marks the ones that have a session.
 
 ## Live Watch
 
+Watch suggestions require a CLI built from the same checkout as the extension.
+After rebuilding the CLI, restart any existing Run or attach session so it can
+serve new commands. An older session falls back to suggestions from the selected
+ELF. Pointer and active task-state suggestions still need a current live session.
+Check `tuningStudio.executable` if the dropdown asks for a CLI update. Failed
+suggestion requests are logged in the Tuning Studio Output channel.
+
 Each poll runs `tuning-studio inspect` for the declared values, then
 `tuning-studio inspect <locations...>` for the locations you added. Commands run
 one at a time through one queue. If the whole added-watch call fails on a

@@ -307,6 +307,6 @@ body {
   color: var(--vscode-editorSuggestWidget-selectedForeground, var(--vscode-list-activeSelectionForeground));
   background: var(--vscode-editorSuggestWidget-selectedBackground, var(--vscode-list-activeSelectionBackground));
 }
-.suggestion-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.suggestion-path { direction: rtl; text-align: left; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .suggestion-type { flex: 0 1 40%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: .65; font-size: 11px; }
 .suggestion-empty { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 4px 6px; color: var(--vscode-descriptionForeground); font-size: 11px; }

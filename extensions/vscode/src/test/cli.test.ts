@@ -265,3 +265,19 @@ test('Copy Value keeps scalar digits and quoted values without display metadata'
   assert.equal(rawValue(v('0x20000000: u32 = 0xdeadbeef')), '0xdeadbeef');
   assert.equal(rawValue({ ...v(''), error: 'read failed' }), '');
 });
+
+test('suggestions fall back to the ELF for an older session and explain an older executable', async () => {
+  const { watchSuggestions } = await import('../completions');
+  const calls: string[][] = [];
+  const missing = { ok: false as const, stdout: '', stderr: '', failure: { kind: 'failed' as const, message: "unrecognized subcommand 'complete'" } };
+  const result = await watchSuggestions(async args => {
+    calls.push(args);
+    return args.includes('--elf') ? { ok: true, stdout: JSON.stringify({ version: 1, items: [{ path: 'REMOTE', label: 'REMOTE', type: 'u32' }] }), stderr: '' } : missing;
+  }, 'rem', { live: true, probe: 'probe1', elf: '/firmware.elf' });
+  assert.equal(result.items[0].path, 'REMOTE');
+  assert.deepEqual(calls, [['complete', '--probe', 'probe1', '--', 'rem'], ['complete', '--elf', '/firmware.elf', '--', 'rem']]);
+  const older = await watchSuggestions(async () => missing, '', { live: false, probe: '', elf: '/firmware.elf' });
+  assert.match(older.message!, /Rebuild the CLI.*restart Run/);
+  const disconnected = await watchSuggestions(async () => { throw new Error('must not attach'); }, '', { live: false, probe: '' });
+  assert.deepEqual(disconnected.items, []);
+});
