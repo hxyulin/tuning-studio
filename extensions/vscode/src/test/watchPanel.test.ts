@@ -55,6 +55,7 @@ class FakeElement {
   focus() { this.doc.focusOn(this); }
   blur() { if (this.doc.activeElement === this) this.doc.focusOn(this.doc.body); }
   select() {}
+  scrollIntoView() {}
   getBoundingClientRect() { return { left: 0, right: 0, top: 0, bottom: 0, width: 0, height: 0 }; }
   find(predicate: (e: FakeElement) => boolean): FakeElement[] {
     return this.children.flatMap(c => [...(predicate(c) ? [c] : []), ...c.find(predicate)]);
@@ -86,19 +87,21 @@ function loadWebview(initialState: Record<string, unknown> = {}) {
   }
   const location = doc.createElement('input'); location.id = 'location'; doc.getElementById('add')!.append(location);
   const posted: Record<string, unknown>[] = [];
+  const timers = new Map<number, () => void>();
+  let timerId = 0;
   const windowListeners: Listener[] = [];
   const window = {
     innerWidth: 300, innerHeight: 600,
     addEventListener: (type: string, listener: Listener) => { if (type === 'message') windowListeners.push(listener); },
   };
   runInNewContext(readFileSync(path.join(__dirname, '../../media/watch.js'), 'utf8'), {
-    document: doc, window, acquireVsCodeApi: () => ({ postMessage: (m: Record<string, unknown>) => posted.push(structuredClone(m)), getState: () => savedState, setState: (value: Record<string, unknown>) => { savedState = structuredClone(value); } }),
+    document: doc, window, setTimeout: (fn: () => void) => { timers.set(++timerId, fn); return timerId; }, clearTimeout: (id: number) => timers.delete(id), acquireVsCodeApi: () => ({ postMessage: (m: Record<string, unknown>) => posted.push(structuredClone(m)), getState: () => savedState, setState: (value: Record<string, unknown>) => { savedState = structuredClone(value); } }),
   });
   const deliver = (data: unknown) => windowListeners.forEach(l => l(new FakeEvent('message', { data })));
   const list = doc.getElementById('values')!;
   const row = (p: string) => list.children.find(item => item.getAttribute('aria-label')?.startsWith(p + ','))!;
   const writes = () => posted.filter(m => m.type === 'write');
-  return { doc, posted, deliver, list, row, writes, savedState: () => savedState };
+  return { doc, posted, deliver, list, row, writes, flushTimers: () => { const pending = [...timers.values()]; timers.clear(); pending.forEach(fn => fn()); }, savedState: () => savedState };
 }
 
 const setpoint = (number: number) => ({ path: 'tune_lab::SETPOINT', type: 'f32', kind: 'param', writable: true, display: `tune_lab::SETPOINT = ${number}`, number, reason: 'The firmware applies its range and step limits.' });
@@ -220,6 +223,8 @@ test('the host never writes a read-only value and drops a duplicate write', asyn
   const exports: Record<string, unknown> = {};
   let handler: (m: unknown) => Promise<void> = async () => {};
   const replies: unknown[] = [];
+  const saved = new Map<string, unknown>();
+  const workspaceState = { get: (key: string, fallback: unknown) => saved.get(key) ?? fallback, update: async (key: string, value: unknown) => { saved.set(key, structuredClone(value)); } };
   const disposable = { dispose() {} };
   const vscode = {
     Uri: { joinPath: (...parts: unknown[]) => parts.join('/') },
@@ -241,7 +246,7 @@ test('the host never writes a read-only value and drops a duplicate write', asyn
   const panel = new Panel('ext', watch, (value: { path: string }, input: string) => {
     writes.push(`${value.path}=${input}`);
     return new Promise(resolve => { finish = () => resolve({ ok: true, text: 'sent' }); });
-  }, (p: string) => suggested.push(p));
+  }, (p: string) => suggested.push(p), workspaceState);
   const view = {
     visible: true,
     onDidChangeVisibility: () => disposable,
@@ -280,6 +285,24 @@ test('the host never writes a read-only value and drops a duplicate write', asyn
   await handler({ type: 'remove', path: 'motor.speed' });
   await handler({ type: 'remove', path: 'missing' });
   assert.deepEqual(removed, ['missing']);
+
+  await handler({ type: 'lock', path: 'tune_lab::SETPOINT', input: 'true' });
+  assert.deepEqual(saved.get('tuningStudio.lockedValues'), ['tune_lab::SETPOINT']);
+  await handler({ type: 'write', path: 'tune_lab::SETPOINT', input: '9' });
+  assert.equal(writes.length, 1, 'a user lock is enforced by the host');
+  assert.match((replies.at(-1) as { text: string }).text, /Locked by you/);
+  // Recreate the provider using the saved workspace state.
+  let reopenedWrites = 0;
+  const reopened = new Panel('ext', watch, async () => { reopenedWrites++; return { ok: true, text: 'sent' }; }, () => {}, workspaceState);
+  reopened.resolveWebviewView(view);
+  await handler({ type: 'write', path: 'tune_lab::SETPOINT', input: '9' });
+  assert.equal(reopenedWrites, 0, 'the lock survives provider recreation');
+  await handler({ type: 'lock', path: 'tune_lab::SETPOINT', input: 'false' });
+  await handler({ type: 'write', path: 'tune_lab::SETPOINT', input: '9' });
+  assert.equal(reopenedWrites, 1);
+  await handler({ type: 'lock', path: 'motor.speed', input: 'false' });
+  await handler({ type: 'write', path: 'motor.speed', input: '9' });
+  assert.equal(reopenedWrites, 1, 'unlocking never overrides backend restrictions');
 });
 
 
@@ -377,4 +400,111 @@ test('pointer arrows request pointees lazily and restore their open state', () =
   assert.deepEqual(ui.posted.filter(m => m.type === 'expand').at(-1), { type: 'expand', path: 'BOXED', input: 'false' });
   ui.deliver(initial);
   assert.equal(ui.posted.filter(m => m.type === 'expand').length, 2);
+});
+
+
+test('watch suggestions retain focus, ignore stale replies, and accept before adding', () => {
+  const { doc, posted, deliver, flushTimers } = loadWebview();
+  const input = doc.getElementById('location')!;
+  deliver({ type: 'addFocus' });
+  assert.equal(doc.activeElement, input, 'the title action uses the same inline field');
+  const old = posted.at(-1)!;
+  input.value = 'gim'; input.dispatch('input'); flushTimers();
+  const current = posted.at(-1)!;
+  assert.equal(current.type, 'complete');
+  assert.equal(current.query, 'gim');
+  deliver({ type: 'completions', id: old.id, query: '', items: [{ path: 'stale', type: 'u32' }] });
+  assert.equal(doc.getElementById('watch-suggestions')!.hidden, true);
+  deliver({ type: 'completions', id: current.id, query: 'gim', items: [{ path: 'sentry::GIMBAL', type: 'StaticCell<Pid>' }] });
+  assert.equal(doc.getElementById('watch-suggestions')!.hidden, false);
+  assert.equal(doc.activeElement, input);
+  input.key('ArrowDown');
+  assert.equal(input.getAttribute('aria-activedescendant'), 'suggestion-0');
+  assert.equal(input.key('Enter').defaultPrevented, true);
+  assert.equal(input.value, 'sentry::GIMBAL');
+  assert.equal(posted.some(m => m.type === 'add'), false);
+  doc.getElementById('add')!.dispatch('submit');
+  assert.equal(posted.at(-1)?.type, 'add');
+  assert.equal(posted.at(-1)?.path, 'sentry::GIMBAL');
+  assert.equal(input.value, '');
+
+  input.value = '0x20000000:f32'; input.dispatch('input');
+  input.key('Escape'); flushTimers();
+  deliver({ type: 'completions', id: current.id, query: 'gim', items: [] });
+  assert.equal(doc.getElementById('watch-suggestions')!.hidden, true);
+  assert.equal(input.value, '0x20000000:f32', 'dismissing suggestions preserves manual input');
+  input.dispatch('input'); flushTimers();
+  input.key('Escape');
+  assert.equal(input.value, '0x20000000:f32', 'Escape also dismisses an in-flight request without clearing input');
+  doc.getElementById('add')!.dispatch('submit');
+  assert.equal(posted.at(-1)?.path, '0x20000000:f32');
+});
+
+test('user locks use the existing context menu without suggesting firmware changes', () => {
+  const { doc, posted, deliver, row, writes } = loadWebview();
+  const value = { ...setpoint(100), lockable: true };
+  deliver({ type: 'values', message: '', values: [value], watches: [], errors: [] });
+  row(value.path).key('ContextMenu');
+  const lock = doc.body.byClass('menu-item').find(item => item.textContent === 'Lock Value')!;
+  assert.ok(lock); lock.click();
+  assert.deepEqual(posted.at(-1), { type: 'lock', path: value.path, input: 'true' });
+  deliver({ type: 'values', message: '', values: [{ ...value, writable: false, userLocked: true, reason: 'Locked by you.' }], watches: [], errors: [] });
+  row(value.path).byClass('value')[0].click();
+  assert.equal(row(value.path).byClass('edit').length, 0);
+  assert.equal(doc.body.byClass('reason-action').length, 0);
+  doc.body.byClass('reason-popup')[0].key('Escape');
+  row(value.path).key('ContextMenu');
+  const unlock = doc.body.byClass('menu-item').find(item => item.textContent === 'Unlock Value')!;
+  assert.ok(unlock); unlock.click();
+  assert.deepEqual(posted.at(-1), { type: 'lock', path: value.path, input: 'false' });
+  assert.equal(writes().length, 0);
+});
+
+
+test('suggestion requests coalesce while a CLI call is in flight', async () => {
+  let handler: (message: unknown) => Promise<void> = async () => {};
+  const posted: Record<string, unknown>[] = [];
+  const calls: string[] = [];
+  const finish: (() => void)[] = [];
+  const disposable = { dispose() {} };
+  const exports: Record<string, unknown> = {};
+  runInNewContext(readFileSync(path.join(__dirname, '../watchPanel.js'), 'utf8'), {
+    exports,
+    require: (name: string) => name === 'vscode' ? {
+      Uri: { joinPath: (...parts: unknown[]) => parts.join('/') },
+      EventEmitter: class { event = () => disposable; fire() {} dispose() {} },
+    } : require(name.startsWith('./') ? path.join(__dirname, '..', name) : name),
+  });
+  const Panel = exports.WatchPanel as new (...args: unknown[]) => { resolveWebviewView(view: unknown): void };
+  const panel = new Panel('ext', { declared: [], watchedValues: new Map(), watched: [] }, async () => {}, () => {}, undefined, (query: string) => {
+    calls.push(query);
+    return new Promise(resolve => finish.push(() => resolve({ items: [{ path: query, label: query, type: 'u32' }] })));
+  });
+  panel.resolveWebviewView({ visible: true, onDidChangeVisibility: () => disposable, onDidDispose: () => disposable,
+    webview: { cspSource: 'local', asWebviewUri: (uri: string) => uri,
+      onDidReceiveMessage: (fn: typeof handler) => { handler = fn; return disposable; },
+      postMessage: async (message: Record<string, unknown>) => { posted.push(structuredClone(message)); },
+    },
+  });
+  await handler({ type: 'complete', query: 'a', id: 1 });
+  await handler({ type: 'complete', query: 'ab', id: 2 });
+  await handler({ type: 'complete', query: 'abc', id: 3 });
+  assert.deepEqual(calls, ['a']);
+  finish[0](); await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, ['a', 'abc']);
+  assert.equal(posted.some(message => message.type === 'completions'), false, 'superseded results are not posted');
+  finish[1](); await new Promise<void>(resolve => setImmediate(resolve));
+  const reply = posted.find(message => message.type === 'completions')!;
+  assert.equal(reply.id, 3); assert.equal(reply.query, 'abc');
+});
+
+test('watch names drag their full paths', () => {
+  const h = loadWebview(); h.deliver(poll(1));
+  const name = h.row('motor.speed').byClass('name')[0];
+  const payload = new Map<string, string>();
+  const transfer = { setData: (type: string, value: string) => payload.set(type, value), effectAllowed: '' };
+  name.dispatch('dragstart', { dataTransfer: transfer });
+  assert.equal(payload.get('application/x-tuning-studio-watch'), 'motor.speed');
+  assert.equal(payload.get('text/plain'), 'motor.speed');
+  assert.equal(transfer.effectAllowed, 'copy');
 });

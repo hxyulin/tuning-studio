@@ -1,8 +1,9 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { Cli } from './cli';
+import { parseCompletions } from './completions';
 import { Failure, parseProbeList, setArgs, tasksArgs } from './cliText';
-import { InspectValue, flattenValues } from './inspect';
+import { InspectValue, flattenValues, rawValue } from './inspect';
 import { LiveWatch } from './liveWatch';
 import { MAX_SERIES, PlotModel, PlotViewProvider } from './plotView';
 import { SessionController, SessionState } from './session';
@@ -47,7 +48,14 @@ export function activate(context: vscode.ExtensionContext): void {
       return { ok: false, text: noSession(result.failure) };
     }
     return { ok: true, text: result.stdout.trim() || 'Write sent. The next read shows the current value.' };
-  }, p => { void suggestMutableWatch(p); });
+  }, p => { void suggestMutableWatch(p); }, context.workspaceState, async query => {
+    const elf = sessionTree.plan?.elf?.value;
+    if (!session.isReady && !elf) return { items: [], message: 'Run firmware or select an ELF for suggestions' };
+    const target = session.isReady ? (settings.probe() ? ['--probe', settings.probe()] : []) : ['--elf', elf!];
+    const result = await cli.run(['complete', ...target, '--', query], { timeoutMs: 5000 });
+    if (!result.ok) return { items: [], message: result.failure.message };
+    return { items: parseCompletions(result.stdout) };
+  });
   const tasksView = vscode.window.createTreeView('tuningStudio.tasks', {
     treeDataProvider: tasksTree,
   });
@@ -212,7 +220,11 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   });
 
-  command('tuningStudio.stop', () => session.stop());
+  command('tuningStudio.stop', async () => {
+    try { await session.stop(); } catch (error) {
+      void vscode.window.showErrorMessage(`Could not stop: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  });
 
   command('tuningStudio.refreshSession', async () => {
     await refreshPlan();
@@ -301,15 +313,8 @@ export function activate(context: vscode.ExtensionContext): void {
   });
 
   command('tuningStudio.addWatch', async () => {
-    const location = await vscode.window.showInputBox({
-      title: 'Add Watch',
-      prompt: 'Symbol path, or address with a type',
-      placeHolder: 'CONTROL.yaw.target_rpm    0x24000070:f32',
-      validateInput: (v) => (v.trim() === '' ? 'Enter a location' : undefined),
-    });
-    if (location) {
-      await watch.addWatch(location.trim());
-    }
+    await vscode.commands.executeCommand('tuningStudio.watch.focus');
+    watchView.focusAddWatch();
   });
 
   command('tuningStudio.editWatch', async (node?: WatchNode) => {
@@ -350,7 +355,7 @@ export function activate(context: vscode.ExtensionContext): void {
   command('tuningStudio.copyValue', async (node?: WatchNode) => {
     const value = valueOf(node);
     if (value) {
-      await vscode.env.clipboard.writeText(value.error ?? value.display);
+      await vscode.env.clipboard.writeText(rawValue(value));
     }
   });
 

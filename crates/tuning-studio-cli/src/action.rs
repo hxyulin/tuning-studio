@@ -23,6 +23,8 @@ pub enum Action {
     Values,
     /// Inspect declared API values or selected locations as versioned JSON
     Inspect(InspectArgs),
+    /// Suggest symbols and fields for a watch path as JSON
+    Complete(CompleteArgs),
     /// Write one value, then read it back. A `Param` changes through the
     /// firmware, which applies its range and step.
     Set(SetArgs),
@@ -75,6 +77,12 @@ pub struct ReadArgs {
     /// `0x20000038:Axis.gains.2`. Types other than the primitives need an ELF.
     #[arg(required = true)]
     pub locations: Vec<String>,
+}
+
+#[derive(Args, Debug, PartialEq)]
+pub struct CompleteArgs {
+    #[arg(default_value = "")]
+    pub query: String,
 }
 
 #[derive(Args, Debug, PartialEq)]
@@ -208,6 +216,7 @@ impl Action {
                 push(&mut words, &["--"]);
                 words.extend(args.locations.iter().cloned());
             }
+            Action::Complete(args) => push(&mut words, &["complete", "--", &args.query]),
             Action::Set(args) => push(&mut words, &["set", &args.location, &args.value]),
             Action::Halt => push(&mut words, &["halt"]),
             Action::Resume => push(&mut words, &["resume"]),

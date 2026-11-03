@@ -1,5 +1,6 @@
 mod action;
 mod api;
+mod complete;
 mod daemon;
 mod debug;
 mod flash;
@@ -27,8 +28,8 @@ use studio_dwarf::tree::{self, NodeKind, Step};
 use studio_dwarf::{ElfInfo, ElfParser};
 
 use action::{
-    Action, BreakArgs, DeleteArgs, FlashArgs, InspectArgs, ReadArgs, ResetArgs, SetArgs, StopArgs,
-    TasksArgs, TraceArgs, WatchArgs,
+    Action, BreakArgs, CompleteArgs, DeleteArgs, FlashArgs, InspectArgs, ReadArgs, ResetArgs,
+    SetArgs, StopArgs, TasksArgs, TraceArgs, WatchArgs,
 };
 use flash::AfterReset;
 use memory::Memory;
@@ -115,6 +116,15 @@ enum Command {
         target: TargetArgs,
         #[command(flatten)]
         args: InspectArgs,
+    },
+    /// Suggest symbols and fields from a session, or from an ELF without a probe
+    Complete {
+        #[arg(long)]
+        probe: Option<String>,
+        #[arg(long)]
+        elf: Option<PathBuf>,
+        #[command(flatten)]
+        args: CompleteArgs,
     },
     /// Write one value, then read it back. A `Param` changes through the
     /// firmware, which applies its range and step.
@@ -405,6 +415,19 @@ fn main() -> Result<()> {
                     &args.expansions
                 )?
             );
+        }
+        Command::Complete { probe, elf, args } => {
+            if let Some(elf) = elf {
+                print!(
+                    "{}",
+                    complete::complete_metadata(&ElfParser::parse(&elf)?, &args.query)?
+                );
+            } else {
+                let session = daemon::find(probe.as_deref())?.ok_or_else(|| {
+                    anyhow!("no running session; pass --elf for static suggestions")
+                })?;
+                daemon::request(session, Action::Complete(args).to_words())?;
+            }
         }
         Command::Set { target, args } => {
             if let Some(session) = target.probe.session()? {

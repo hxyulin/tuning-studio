@@ -9,7 +9,7 @@ import {
   statusArgs,
   tasksArgs,
 } from '../cliText';
-import { matchLocations, parseInspect, flattenValues, singleLine } from '../inspect';
+import { rawValue, matchLocations, parseInspect, flattenValues, singleLine } from '../inspect';
 import { parseWebviewMessage } from '../messages';
 import { Series } from '../series';
 import { parseTasksOutput, taskSampleSummary } from '../tasksOutput';
@@ -244,4 +244,24 @@ test('inspect expansion flags precede the location separator', () => {
 
 test('owner Stop without a session is classified as no-session', () => {
   assert.equal(classifyFailure({ stderr: 'Error: no running session\n', code: 1, executable: 'tuning-studio' }).kind, 'no-session');
+});
+
+
+test('watch suggestions validate version, size, and paths', async () => {
+  const { parseCompletions } = await import('../completions');
+  assert.deepEqual(parseCompletions('{"version":1,"items":[{"path":"app::PID","label":"PID","type":"Pid"}]}'), [{ path: 'app::PID', label: 'PID', type: 'Pid' }]);
+  assert.throws(() => parseCompletions('{"version":2,"items":[]}'));
+  assert.throws(() => parseCompletions('{"version":1,"items":[{"path":"","label":"PID","type":"Pid"}]}'));
+  assert.throws(() => parseCompletions(JSON.stringify({ version: 1, items: Array(51).fill({ path: 'a', label: 'a', type: 'u32' }) })));
+});
+
+test('Copy Value keeps scalar digits and quoted values without display metadata', () => {
+  const v = (display: string) => ({ path: 'x', type: 'u64', kind: 'raw' as const, writable: true, display });
+  assert.equal(rawValue(v('x: u64 = 18446744073709551615 counts (min 0)')), '18446744073709551615');
+  assert.equal(rawValue(v('x: f32 = -1.25e-9 rad/s (range 0..1)')), '-1.25e-9');
+  assert.equal(rawValue(v('x: bool = false')), 'false');
+  assert.equal(rawValue(v('x: f32 = NaN rad/s')), 'NaN');
+  assert.equal(rawValue(v('x: str = "hello world"')), '"hello world"');
+  assert.equal(rawValue(v('0x20000000: u32 = 0xdeadbeef')), '0xdeadbeef');
+  assert.equal(rawValue({ ...v(''), error: 'read failed' }), '');
 });

@@ -89,17 +89,17 @@ Use a process or shell task rather than a task consisting only of dependencies.
 
 ### Stop
 
-Stop terminates only the build or session that Run started. A session started
-in a terminal shows as `external`; stop it there. Stop closes the task
-terminal only while a build is running. For a running session, Stop sends an
-owner-checked detach request. The CLI clears breakpoints, resumes a halted core,
-and exits through its normal cleanup. A failed detach leaves the terminal open
-and reports the reason. This needs a matching CLI with the `stop --owner` command.
+Stop ends only the build or session that Run started. A session started in another
+terminal shows as `external`; stop it there. Stop first requests normal detach.
+If Run stays alive, it sends Ctrl+C to the owned task's terminal or SIGINT to its
+process, then terminates the task if needed. Stop waits for the task to exit;
+a new Run waits for Stop to finish.
 
 ## Probe
 
-Every command gets `--probe` when `tuningStudio.probe` is set, and never gets
-`--chip` or `--elf`. So a command reaches a running session or fails; it cannot
+Session commands get `--probe` when `tuningStudio.probe` is set, and never get
+`--chip` or `--elf`. Offline suggestions use `complete --elf <file>` and do not
+attach to a probe. So a command reaches a running session or fails; it cannot
 attach on its own. When sessions run for several probes, the Session view shows
 the CLI's error. Select Probe lists the connected probes with `tuning-studio
 list` and marks the ones that have a session.
@@ -138,14 +138,28 @@ full value and the reason it is read-only or failed.
   back. A successful send is not proof that firmware applied a mailbox request.
 - Right-click a row, click its `⋯` button, or press Shift+F10 for its actions:
   Edit Value, Show Reason or Show Error, Suggest watch_mut! in Source, Copy
-  Value, Copy Path, and Remove Watch for locations you added.
+  Value, Copy Path, and Remove Watch for locations you added. Copy Value copies
+  the payload without its name, type, units, or parameter limits.
 - Clicking a read-only or unavailable value, or pressing Enter/F2 on its row,
   opens a popover with its reason and any source suggestion. Escape or clicking
   outside dismisses it.
 - Arrow keys, Home and End move between rows. The context menu can also show
   the reason inline; Escape hides it. Delete removes an added watch.
-- Type a symbol path or `address:type` in the field below the rows and press
-  Enter to add a watch. The `+` button in the view title asks for one instead.
+- Type in the field below the rows for symbol and field suggestions. The dropdown
+  includes globals and typed Embassy task slots. Continue with `.`, `[` or `#`
+  to explore a path. Up/Down selects a suggestion; Enter or Tab accepts it, and
+  Enter again adds the watch. Escape dismisses suggestions without clearing your
+  input. Manual symbol paths and `address:type` entries still work. Suggestions
+  use the running session, or the selected ELF's static metadata before Run.
+  Live pointers and active task-state paths need a running session.
+- Choose **Lock Value** or **Unlock Value** from a row's context menu to control
+  editing. Locks persist per workspace and gray the value. Supported values,
+  including runtime bookkeeping, stay editable by default. A user lock blocks
+  writes to that path through this extension; it does not change firmware or other CLI clients.
+  Unlock restores the backend's normal permissions and never bypasses a backend
+  restriction.
+- Type a symbol path or `address:type` and press Enter without selecting a
+  suggestion to add it directly. The `+` button in the view title focuses this same field.
 - Suggest watch_mut! in Source searches Rust files for the variable name.
   This is a search, not an exact DWARF source mapping. Select the mutable scalar
   expression in the task, then use **Insert watch_mut! for Selection** or the
@@ -204,10 +218,22 @@ CLI's text for every sample. A state with a source line opens it on click.
 
 ## Plot
 
+Drag a numeric value's name from Live Watch onto the plot to add it. The existing
+**+ Add variable** list also works. Drag the **Variables** header to move the
+floating list; resize it from the bottom-right corner. Its position and size
+survive changes to the plotted values and webview recreation.
+
 The panel shows one plot with up to 8 variables on a shared y-axis.
 Choose **+ Add variable** below the variable list on the left. Click a variable
 to hide or show its trace. Hidden variables keep collecting samples. Hover a
 variable and click its × to remove it from the plot.
+
+Drag the bottom time scale left/right to stretch the horizontal axis. Drag the
+right value scale up/down to stretch the vertical axis. Scroll over the chart
+for horizontal zoom, or Shift+scroll for vertical zoom. Double-click the chart
+to reset both scales; double-click the time scale to reset only time. The time
+scale also supports Left/Right arrow keys and Home to reset. Zoom survives
+changes to plotted values and webview recreation.
 
 Click the plot title to rename it, press Enter to save, or Escape to cancel.
 The × in the top-right corner removes the plot and its variables. Add a

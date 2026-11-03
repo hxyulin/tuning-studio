@@ -455,6 +455,11 @@ fn handle(
                 &args.expansions,
             )?;
         }
+        SessionCommand::Action(Action::Complete(args)) => {
+            let elf = elf.ok_or_else(|| anyhow!("the session has no ELF to suggest symbols"))?;
+            *out +=
+                &crate::complete::complete(elf, &mut target.memory(&mut session)?, &args.query)?;
+        }
         SessionCommand::Action(Action::Read(ReadArgs { locations })) => {
             let mut memory = target.memory(&mut session)?;
             *out += &crate::read_locations(elf, &mut memory, &locations)?;
@@ -938,6 +943,9 @@ mod tests {
             flash(Some("/tmp/fw.elf"), false, false, false),
             flash(None, true, false, false),
             Action::Status,
+            Action::Complete(crate::action::CompleteArgs {
+                query: "GIMBAL.val[0].".into(),
+            }),
             Action::Stop(crate::action::StopArgs {
                 owner: "run-123".into(),
             }),

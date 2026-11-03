@@ -37,3 +37,14 @@ button:focus-visible, select:focus-visible, input:focus { outline: 1px solid var
 #footer { height: 0; }
 #status { position: absolute; bottom: 26px; right: 64px; max-width: calc(70% - 64px); color: var(--vscode-descriptionForeground); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
 #status:empty { display: none; }
+
+.plot-body { display: block; position: relative; overflow: hidden; }
+.chart { height: 100%; }
+.legend { position: absolute; z-index: 2; left: 12px; top: 8px; width: 240px; height: 180px; min-width: 120px; min-height: 60px; max-width: 100%; max-height: 100%; box-sizing: border-box; resize: both; padding: 0 4px 8px; border: 1px solid var(--vscode-widget-border, #555); border-radius: 4px; background: var(--vscode-editorWidget-background, var(--vscode-editor-background)); box-shadow: 0 2px 8px var(--vscode-widget-shadow); }
+.legend-grip { padding: 5px 4px; cursor: move; touch-action: none; user-select: none; color: var(--vscode-descriptionForeground); font-size: 11px; }
+.drop-target { outline: 1px solid var(--vscode-focusBorder); outline-offset: -2px; }
+.path { direction: rtl; text-align: left; }
+
+.plot-axis { cursor: ew-resize; touch-action: none; }
+.plot-canvas { touch-action: none; }
+.plot-axis:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }

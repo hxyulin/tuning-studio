@@ -242,3 +242,16 @@ refuses missing or different owner tokens. The VS Code extension uses it for
 Stop; external terminal sessions still end with Ctrl-C or interactive `quit`.
 The token prevents stopping a different run by mistake. It is not an
 access-control boundary against other processes running as the same user.
+
+### Watch suggestions
+
+`complete [--probe <selector>] -- <partial-path>` returns versioned JSON with
+up to 50 symbol or field suggestions from the current session. Results include
+full paths, labels and types, without sampling their values. Continue a path
+with `.`, `[` or `#` for fields, indices or enum variants. Live suggestions only
+include the active variant and can resolve pointer paths.
+
+`complete --elf <firmware> -- <partial-path>` reads static metadata without
+connecting to a probe. It can suggest globals and ordinary fields; active task
+variants and pointee addresses require a running session. The VS Code Add Watch
+field uses these commands for its dropdown.

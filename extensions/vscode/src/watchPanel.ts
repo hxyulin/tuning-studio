@@ -1,16 +1,22 @@
 import { randomBytes } from 'node:crypto';
 import * as vscode from 'vscode';
-import { editReason, InspectValue } from './inspect';
+import { editReason, rawValue, InspectValue } from './inspect';
 import { LiveWatch } from './liveWatch';
+import { WatchSuggestions } from './completions';
 
 export interface WriteResult { ok: boolean; text: string }
 
 /** Live values with row-local edit state, independent of incoming polls. */
 export class WatchPanel implements vscode.WebviewViewProvider, vscode.Disposable {
   private view?: vscode.WebviewView;
+  private ready = false;
+  private addFocusWanted = false;
   /** Paths with a write in flight; a second write for the same path is dropped. */
   private readonly writing = new Set<string>();
   private message = '';
+  private readonly locked: Set<string>;
+  private completionQuery?: { query: string; id: number };
+  private completing = false;
   private readonly changed = new vscode.EventEmitter<void>();
   readonly onDidChangeVisibility = this.changed.event;
   private readonly disposables: vscode.Disposable[] = [this.changed];
@@ -19,20 +25,39 @@ export class WatchPanel implements vscode.WebviewViewProvider, vscode.Disposable
     private readonly watch: LiveWatch,
     private readonly write: (value: InspectValue, input: string) => Promise<WriteResult>,
     private readonly suggest: (path: string) => void,
-  ) {}
+    private readonly state?: vscode.Memento,
+    private readonly complete?: (query: string) => Promise<WatchSuggestions>,
+  ) {
+    const saved = state?.get<unknown>('tuningStudio.lockedValues', []);
+    this.locked = new Set(Array.isArray(saved) ? saved.filter((p): p is string => typeof p === 'string' && p.length <= 1024) : []);
+  }
   get visible(): boolean { return this.view?.visible ?? false; }
   resolveWebviewView(view: vscode.WebviewView): void {
     this.view = view;
+    this.ready = false;
     const media = vscode.Uri.joinPath(this.uri, 'media');
     view.webview.options = { enableScripts: true, localResourceRoots: [media] };
     const nonce = randomBytes(16).toString('base64');
     const asset = (file: string) => view.webview.asWebviewUri(vscode.Uri.joinPath(media, file));
     view.webview.html = `<!doctype html><html><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${view.webview.cspSource}; script-src 'nonce-${nonce}'"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="${asset('watch.css')}"></head><body><p id="status" role="status" hidden></p><div id="values" role="tree" aria-label="Live values"></div><p id="empty" hidden>No values yet. Run firmware, or add a symbol or address:type below.</p><form id="add"><input id="location" aria-label="Add watch: symbol path or address:type" placeholder="Add watch: symbol or address:type" spellcheck="false" autocomplete="off"></form><div id="announce" class="sr-only" aria-live="polite"></div><script nonce="${nonce}" src="${asset('watch.js')}"></script></body></html>`;
-    this.disposables.push(view.onDidChangeVisibility(() => { this.refresh(); this.changed.fire(); }), view.onDidDispose(() => { this.view = undefined; this.changed.fire(); }), view.webview.onDidReceiveMessage(async (raw: unknown) => {
+    this.disposables.push(view.onDidChangeVisibility(() => { this.refresh(); this.changed.fire(); }), view.onDidDispose(() => { this.view = undefined; this.ready = false; this.changed.fire(); }), view.webview.onDidReceiveMessage(async (raw: unknown) => {
       if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return;
       const m = raw as Record<string, unknown>;
-      if (m.type === 'ready') { this.refresh(); return; }
+      if (m.type === 'ready') { this.ready = true; this.refresh(); if (this.addFocusWanted) this.focusAddWatch(); return; }
+      if (m.type === 'complete' && typeof m.query === 'string' && m.query.length <= 1024 && Number.isSafeInteger(m.id)) {
+        this.completionQuery = { query: m.query, id: m.id as number };
+        void this.completeLatest();
+        return;
+      }
       if (typeof m.path !== 'string' || !m.path || m.path.length > 1024) return;
+      if (m.type === 'lock' && (m.input === 'true' || m.input === 'false')) {
+        const value = this.watch.lookup(m.path);
+        if (!value || (!value.writable && !this.locked.has(m.path))) return;
+        if (m.input === 'true') this.locked.add(m.path); else this.locked.delete(m.path);
+        await this.state?.update('tuningStudio.lockedValues', [...this.locked]);
+        this.refresh();
+        return;
+      }
       if (m.type === 'add') { await this.watch.addWatch(m.path); return; }
       if (m.type === 'remove' && this.watch.watched.includes(m.path)) { await this.watch.removeWatch(m.path); return; }
       if (m.type === 'expand' && (m.input === 'true' || m.input === 'false')) {
@@ -48,6 +73,7 @@ export class WatchPanel implements vscode.WebviewViewProvider, vscode.Disposable
         const value = this.watch.lookup(path);
         let reply: WriteResult;
         if (!value) reply = { ok: false, text: 'This value is no longer available.' };
+        else if (this.locked.has(path)) reply = { ok: false, text: 'Locked by you. Unlock Value from the context menu to edit.' };
         else if (!value.writable || value.error) reply = { ok: false, text: editReason(value) };
         else {
           this.writing.add(path);
@@ -62,7 +88,7 @@ export class WatchPanel implements vscode.WebviewViewProvider, vscode.Disposable
       if (m.type === 'copy' && m.input === 'path' && (value || this.watch.watched.includes(m.path))) { await vscode.env.clipboard.writeText(m.path); return; }
       if (!value) return;
       if (m.type === 'suggest' && !value.writable) { this.suggest(value.path); return; }
-      if (m.type === 'copy' && m.input === 'value') await vscode.env.clipboard.writeText(value.error ?? value.display);
+      if (m.type === 'copy' && m.input === 'value') await vscode.env.clipboard.writeText(rawValue(value));
     }));
     this.refresh(); this.changed.fire();
   }
@@ -70,8 +96,31 @@ export class WatchPanel implements vscode.WebviewViewProvider, vscode.Disposable
     this.message = message;
     const values = [...this.watch.declared, ...this.watch.watchedValues.values()].flat();
     const unique = [...new Map(values.map(v => [v.path, v])).values()];
-    const present = (v: InspectValue): unknown => ({ ...v, reason: editReason(v), children: v.children?.map(present) });
+    const present = (v: InspectValue): unknown => ({
+      ...v, writable: v.writable && !this.locked.has(v.path),
+      userLocked: this.locked.has(v.path), lockable: v.writable || this.locked.has(v.path),
+      reason: this.locked.has(v.path) ? 'Locked by you. Unlock Value from the context menu to edit.' : editReason(v),
+      children: v.children?.map(present),
+    });
     void this.view?.webview.postMessage({ type: 'values', message, values: unique.map(present), watches: this.watch.watched, errors: this.watch.watched.map(path => ({ path, error: this.watch.watchedError ?? (this.watch.watchedValues.get(path)?.length ? '' : 'Waiting for a value') })) });
+  }
+  private async completeLatest(): Promise<void> {
+    if (this.completing) return;
+    this.completing = true;
+    try {
+      while (this.completionQuery) {
+        const request = this.completionQuery;
+        this.completionQuery = undefined;
+        let reply: WatchSuggestions;
+        try { reply = await this.complete?.(request.query) ?? { items: [] }; }
+        catch (error) { reply = { items: [], message: error instanceof Error ? error.message : String(error) }; }
+        if (!this.completionQuery) void this.view?.webview.postMessage({ type: 'completions', id: request.id, query: request.query, ...reply });
+      }
+    } finally { this.completing = false; }
+  }
+  focusAddWatch(): void {
+    this.addFocusWanted = !this.ready;
+    if (this.ready) void this.view?.webview.postMessage({ type: 'addFocus' });
   }
   focus(path: string): void { void this.view?.webview.postMessage({ type: 'edit', path }); }
   dispose(): void { this.disposables.forEach(d => d.dispose()); }

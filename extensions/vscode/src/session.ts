@@ -26,6 +26,9 @@ export class SessionController implements vscode.Disposable {
   private owned?: vscode.TaskExecution;
   private ownedRole?: 'build' | 'run';
   private stopRequested = false;
+  private processId?: number;
+  private readonly taskPids = new WeakMap<vscode.TaskExecution, number>();
+  private ended?: Promise<number | undefined>;
   private owner?: { token: string; probe: string };
   private stopping?: Promise<void>;
   private checkTimer?: NodeJS.Timeout;
@@ -59,6 +62,10 @@ export class SessionController implements vscode.Disposable {
         }
       }),
       vscode.debug.onDidTerminateDebugSession((s) => this.probeRsSessions.delete(s.id)),
+      vscode.tasks.onDidStartTaskProcess((e) => {
+        this.taskPids.set(e.execution, e.processId);
+        if (this.owned && sameExecution(this.owned, e.execution)) this.processId = e.processId;
+      }),
       vscode.tasks.onDidEndTaskProcess((e) => this.onTaskEnded(e.execution, e.exitCode)),
       // A task made only of dependsOn has no process; its end has no exit code.
       vscode.tasks.onDidEndTask((e) => this.onTaskEnded(e.execution, undefined)),
@@ -155,6 +162,7 @@ export class SessionController implements vscode.Disposable {
 
   /** Build if needed, start `tuning-studio run` as a task, and wait for its session. */
   async run(command: RunCommand, folder: vscode.WorkspaceFolder): Promise<void> {
+    if (this.stopping) await this.stopping;
     if (this.owned) {
       void vscode.window.showInformationMessage('Run is already in progress.');
       return;
@@ -260,6 +268,7 @@ export class SessionController implements vscode.Disposable {
     this.log.appendLine('Stopping the session Run started.');
     if (this.ownedRole === 'build' || !this.owner) {
       execution.terminate();
+      if (!await this.waitForEnd(execution, 3000)) throw new Error('Build did not exit. Close its terminal before running again.');
       return;
     }
     const owner = this.owner;
@@ -271,9 +280,26 @@ export class SessionController implements vscode.Disposable {
     if (result.ok) {
       // Let the session clear breakpoints, resume the core, and exit itself.
       this.log.appendLine('Detach requested; waiting for Run to exit.');
-    } else if (result.failure.kind === 'no-session' && this.stateValue.kind === 'starting') {
-      // Cargo may still be compiling, before there is a session to detach.
+      if (!await this.waitForEnd(execution, 1500)) {
+        // Match the owned task's PID, so an unrelated terminal cannot receive Ctrl+C.
+        const pid = this.processId;
+        const terminals = await Promise.all(vscode.window.terminals.map(async terminal => ({ terminal, pid: await terminal.processId })));
+        const terminal = pid === undefined ? undefined : terminals.find(t => t.pid === pid)?.terminal;
+        if (terminal) terminal.sendText('\u0003', false);
+        else if (pid !== undefined) {
+          try { process.kill(pid, 'SIGINT'); } catch { /* It may have just exited. */ }
+        }
+        if (!await this.waitForEnd(execution, 1500)) {
+          execution.terminate();
+          if (!await this.waitForEnd(execution, 3000)) {
+            throw new Error('Run did not exit after termination. Close its terminal before running again.');
+          }
+        }
+      }
+    } else if (result.failure.kind === 'no-session') {
+      // Cargo may still be compiling, or detach may have finished before this request.
       execution.terminate();
+      if (!await this.waitForEnd(execution, 3000)) throw new Error('Run did not exit. Close its terminal before running again.');
     } else {
       this.stopRequested = false;
       this.emitter.fire(this.stateValue);
@@ -282,16 +308,33 @@ export class SessionController implements vscode.Disposable {
     }
   }
 
+  private async waitForEnd(execution: vscode.TaskExecution, timeoutMs: number): Promise<boolean> {
+    if (this.owned !== execution) return true;
+    const ended = this.ended;
+    if (!ended) return false;
+    let timer: NodeJS.Timeout | undefined;
+    const done = await Promise.race([
+      ended.then(() => true),
+      new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), timeoutMs); }),
+    ]);
+    if (timer) clearTimeout(timer);
+    return done;
+  }
+
   private pendingEnd?: { execution: vscode.TaskExecution; resolve: (code: number | undefined) => void };
 
   private async runOwned(task: vscode.Task, role: 'build' | 'run'): Promise<number | undefined> {
     const execution = await vscode.tasks.executeTask(task);
     this.owned = execution;
+    this.processId = this.taskPids.get(execution);
     this.ownedRole = role;
     void vscode.commands.executeCommand('setContext', 'tuningStudio.owned', true);
-    const code = await new Promise<number | undefined>((resolve) => {
+    this.ended = new Promise<number | undefined>((resolve) => {
       this.pendingEnd = { execution, resolve };
     });
+    const code = await this.ended;
+    this.processId = undefined;
+    this.ended = undefined;
     this.owned = undefined;
     this.ownedRole = undefined;
     this.owner = undefined;

@@ -29,6 +29,10 @@
    *   lane: HTMLElement, canvas: HTMLCanvasElement, valueEl: HTMLElement, hidden: boolean }} Lane
    */
 
+  const savedZoom = vscode.getState()?.zoom;
+  const validZoom = value => typeof value === 'number' && Number.isFinite(value) ? Math.max(0.01, Math.min(100, value)) : 1;
+  const zoom = { x: validZoom(savedZoom?.x), y: validZoom(savedZoom?.y) };
+  const saveZoom = () => vscode.setState({ ...vscode.getState(), zoom });
   const state = {
     windowSeconds: 30,
     capacity: 6000,
@@ -44,6 +48,7 @@
   };
 
   const send = (action, id = '', path = '', text = '') => vscode.postMessage({ type: 'layout', action, id, path, text });
+  let legendBox = vscode.getState()?.legendBox;
   const plotResize = new ResizeObserver(schedule);
   let frame = 0;
   function schedule() {
@@ -167,6 +172,45 @@
     }
     const body = document.createElement('div'); body.className = 'plot-body';
     const legend = document.createElement('div'); legend.className = 'legend';
+    const grip = document.createElement('div'); grip.className = 'legend-grip';
+    grip.textContent = 'Variables'; grip.title = 'Drag to move; resize from the bottom-right corner'; legend.append(grip);
+    const placeLegend = () => {
+      if (!legendBox) return;
+      const width = Math.min(legendBox.width, Math.max(120, body.clientWidth));
+      const height = Math.min(legendBox.height, Math.max(60, body.clientHeight));
+      legend.style.width = `${width}px`; legend.style.height = `${height}px`;
+      legend.style.left = `${Math.max(0, Math.min(legendBox.x, body.clientWidth - width))}px`;
+      legend.style.top = `${Math.max(0, Math.min(legendBox.y, body.clientHeight - height))}px`;
+    };
+    const rememberLegend = () => {
+      legendBox = { x: legend.offsetLeft, y: legend.offsetTop, width: legend.offsetWidth, height: legend.offsetHeight };
+      vscode.setState({ ...vscode.getState(), legendBox });
+    };
+    grip.addEventListener('pointerdown', event => {
+      if (event.button !== 0) return;
+      event.preventDefault(); grip.setPointerCapture(event.pointerId);
+      const x = event.clientX, y = event.clientY, left = legend.offsetLeft, top = legend.offsetTop;
+      const move = event => {
+        legend.style.left = `${Math.max(0, Math.min(body.clientWidth - legend.offsetWidth, left + event.clientX - x))}px`;
+        legend.style.top = `${Math.max(0, Math.min(body.clientHeight - legend.offsetHeight, top + event.clientY - y))}px`;
+      };
+      const finish = () => { grip.removeEventListener('pointermove', move); rememberLegend(); };
+      grip.addEventListener('pointermove', move); grip.addEventListener('pointerup', finish, { once: true });
+      grip.addEventListener('lostpointercapture', finish, { once: true });
+    });
+    legend.addEventListener('pointerup', rememberLegend);
+    body.addEventListener('dragover', event => {
+      if (!event.dataTransfer?.types.includes('application/x-tuning-studio-watch')) return;
+      event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; body.classList.add('drop-target');
+    });
+    body.addEventListener('dragleave', event => { if (!body.contains(/** @type {Node|null} */ (event.relatedTarget))) body.classList.remove('drop-target'); });
+    body.addEventListener('drop', event => {
+      body.classList.remove('drop-target');
+      const path = event.dataTransfer?.getData('application/x-tuning-studio-watch');
+      if (!path) return;
+      event.preventDefault();
+      if (m.choices.includes(path) && !plot.paths.includes(path) && plot.paths.length < 8) send('seriesAdd', plot.id, path);
+    });
     const select = document.createElement('select'); select.setAttribute('aria-label', 'Add variable to plot');
     const placeholder = document.createElement('option'); placeholder.textContent = '+ Add variable'; placeholder.value = ''; select.append(placeholder);
     for (const path of m.choices.filter(path => !plot.paths.includes(path))) {
@@ -177,9 +221,53 @@
     const chart = document.createElement('div'); chart.className = 'chart';
     const canvas = document.createElement('canvas'); canvas.className = 'plot-canvas'; canvas.setAttribute('role', 'img');
     canvas.setAttribute('aria-label', `${plot.title}: ${plot.paths.join(', ')}`);
-    const axis = document.createElement('canvas'); axis.className = 'plot-axis'; axis.setAttribute('aria-hidden', 'true');
+    const axis = document.createElement('canvas'); axis.className = 'plot-axis';
+    axis.tabIndex = 0; axis.setAttribute('role', 'slider'); axis.setAttribute('aria-label', 'Time scale');
+    axis.setAttribute('aria-valuemin', '0.01'); axis.setAttribute('aria-valuemax', '36000');
+    axis.title = 'Drag left/right to stretch time. Double-click to reset. Arrow keys adjust.';
+    canvas.title = 'Scroll to stretch time; Shift+scroll to stretch values. Drag the right scale up/down. Double-click to reset both scales.';
+    const adjustZoom = (dimension, value) => {
+      zoom[dimension] = validZoom(value); saveZoom(); schedule();
+      const seconds = Math.max(0.01, Math.min(36000, state.windowSeconds * zoom.x));
+      axis.setAttribute('aria-valuenow', String(seconds));
+      axis.setAttribute('aria-valuetext', `${seconds.toPrecision(3)} seconds`);
+    };
+    adjustZoom('x', zoom.x);
+    const stretch = (event, dimension, surface) => {
+      if (event.button !== 0) return;
+      event.preventDefault(); surface.setPointerCapture(event.pointerId);
+      const origin = dimension === 'x' ? event.clientX : event.clientY;
+      const initial = zoom[dimension];
+      const move = event => adjustZoom(dimension, initial * Math.exp(((dimension === 'x' ? event.clientX : event.clientY) - origin) * -1 / 120));
+      const finish = () => { surface.removeEventListener('pointermove', move); };
+      surface.addEventListener('pointermove', move);
+      surface.addEventListener('pointerup', finish, { once: true });
+      surface.addEventListener('lostpointercapture', finish, { once: true });
+    };
+    axis.addEventListener('pointerdown', event => stretch(event, 'x', axis));
+    canvas.addEventListener('pointerdown', event => {
+      if (event.clientX >= canvas.getBoundingClientRect().right - GUTTER_RIGHT) stretch(event, 'y', canvas);
+    });
+    axis.addEventListener('dblclick', () => adjustZoom('x', 1));
+    canvas.addEventListener('dblclick', () => { adjustZoom('x', 1); adjustZoom('y', 1); });
+    axis.addEventListener('keydown', event => {
+      if (['ArrowLeft', 'ArrowRight', 'Home'].includes(event.key)) {
+        event.preventDefault(); adjustZoom('x', event.key === 'Home' ? 1 : zoom.x * (event.key === 'ArrowRight' ? 0.8 : 1.25));
+      }
+    });
+    chart.addEventListener('wheel', event => {
+      if (event.ctrlKey || /** @type {Element} */ (event.target).closest('.legend')) return;
+      event.preventDefault();
+      const dimension = event.shiftKey ? 'y' : 'x';
+      const delta = event.deltaY || event.deltaX;
+      const pixels = delta * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? chart.clientHeight : 1);
+      adjustZoom(dimension, zoom[dimension] * Math.exp(Math.max(-100, Math.min(100, pixels)) * (dimension === 'x' ? 1 : -1) / 500));
+    }, { passive: false });
     chart.append(canvas, axis); body.append(legend, chart); card.append(head, body); lanesEl.append(card);
     plotResize.observe(canvas);
+    requestAnimationFrame(placeLegend);
+    plotResize.observe(body);
+    window.onresize = placeLegend;
     for (const path of plot.paths) {
       const series = m.series.find(s => s.path === path);
       if (series) state.lanes.push(makeLane(path, series.t.slice(), series.v.slice(), state.lanes.length, legend, canvas, plot.id, !!plot.hidden?.includes(path)));
@@ -244,7 +332,7 @@
     swatch.style.background = color;
     const pathEl = document.createElement('span');
     pathEl.className = 'path';
-    pathEl.textContent = path;
+    const pathText = document.createElement('bdi'); pathText.dir = 'ltr'; pathText.textContent = path; pathEl.append(pathText);
     pathEl.title = path;
     const valueEl = document.createElement('span');
     valueEl.className = 'value';
@@ -322,7 +410,7 @@
 
   function timeRange() {
     const end = state.frozen ? state.frozenEnd : state.latest;
-    return { start: end - state.windowSeconds, end };
+    return { start: end - Math.max(0.01, Math.min(36000, state.windowSeconds * zoom.x)), end };
   }
 
   function draw() {
@@ -397,6 +485,9 @@
       min -= pad;
       max += pad;
     }
+    const center = min / 2 + max / 2;
+    const half = (max - min) / (2 * zoom.y);
+    min = center - half; max = center + half;
     const y = (v) => bottom - ((v - min) / (max - min)) * (bottom - top);
 
     // Draw the shared scale once per plot.
@@ -540,6 +631,7 @@
   // ---- input --------------------------------------------------------------
 
   lanesEl.addEventListener('pointermove', (event) => {
+    if (/** @type {Element} */ (event.target).closest('.legend')) { state.hover = null; schedule(); return; }
     const card = /** @type {Element} */ (event.target).closest('.plot-card');
     const target = card?.querySelector('canvas');
     if (!target) {

@@ -14,7 +14,7 @@
 
   /**
    * @typedef {{ text: string, full: string, reason: string, error: string, writable: boolean,
-   *   suggest: boolean, number: number | undefined, watch: string | undefined, depth: number, parent: string | undefined,
+   *   suggest: boolean, lockable: boolean, userLocked: boolean, number: number | undefined, watch: string | undefined, depth: number, parent: string | undefined,
    *   label: string | undefined, expandable: boolean, indirect: boolean }} Info
    * @typedef {{ path: string, item: HTMLElement, row: HTMLElement, value: HTMLElement,
    *   more: HTMLButtonElement, toggle: HTMLButtonElement, name: HTMLElement, detail: HTMLElement, message: HTMLElement,
@@ -79,7 +79,16 @@
     toggle.type = 'button'; toggle.tabIndex = -1;
     const name = el('span', 'name');
     const [prefix, leaf] = nameParts(path);
-    name.append(el('span', 'prefix', prefix), el('span', 'leaf', leaf));
+    const nameText = el('bdi'); nameText.dir = 'ltr';
+    nameText.append(el('span', 'prefix', prefix), el('span', 'leaf', leaf)); name.append(nameText);
+    name.draggable = true;
+    name.title = path;
+    name.addEventListener('dragstart', event => {
+      if (r.info.error || r.info.expandable) { event.preventDefault(); return; }
+      event.dataTransfer?.setData('application/x-tuning-studio-watch', path);
+      event.dataTransfer?.setData('text/plain', path);
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = 'copy';
+    });
     const value = el('span', 'value');
     value.setAttribute('aria-hidden', 'true');
     const more = /** @type {HTMLButtonElement} */ (el('button', 'more', '⋯'));
@@ -98,7 +107,7 @@
     /** @type {Row} */
     const r = {
       path, item, row, value, more, toggle, name, detail, message, input: undefined, pending: false, settling: false, writeError: '', expansionError: '', showDetail: false,
-      info: { text: '', full: '', reason: '', error: '', writable: false, suggest: false, number: undefined, watch: undefined, depth: 0, parent: undefined, label: undefined, expandable: false, indirect: false },
+      info: { text: '', full: '', reason: '', error: '', writable: false, suggest: false, lockable: false, userLocked: false, number: undefined, watch: undefined, depth: 0, parent: undefined, label: undefined, expandable: false, indirect: false },
     };
     value.addEventListener('click', () => startEdit(r));
     toggle.addEventListener('click', event => { event.stopPropagation(); toggleExpanded(r); });
@@ -122,7 +131,8 @@
     const { info } = r;
     r.value.textContent = info.text;
     const [prefix, leaf] = info.depth > 0 ? ['', info.label ?? nameParts(r.path)[1]] : nameParts(r.path);
-    r.name.replaceChildren(el('span', 'prefix', prefix), el('span', 'leaf', leaf));
+    const nameText = el('bdi'); nameText.dir = 'ltr';
+    nameText.append(el('span', 'prefix', prefix), el('span', 'leaf', leaf)); r.name.replaceChildren(nameText);
     r.item.style.paddingLeft = `${info.depth * 12}px`;
     r.item.setAttribute('aria-level', String(info.depth + 1));
     r.toggle.style.visibility = info.expandable ? 'visible' : 'hidden';
@@ -302,6 +312,7 @@
     const { info } = r;
     /** @type {{ label: string, key?: string, run: () => void }[][]} */
     const groups = [[], [], []];
+    if (info.lockable) groups[0].push({ label: info.userLocked ? 'Unlock Value' : 'Lock Value', run: () => send('lock', r.path, String(!info.userLocked)) });
     if (info.writable) groups[0].push({ label: 'Edit Value', key: 'Enter', run: () => startEdit(r) });
     if (info.error || info.reason || r.writeError) {
       const noun = info.error || r.writeError ? 'Error' : 'Reason';
@@ -434,7 +445,8 @@
         reason: typeof value.reason === 'string' && value.reason !== error ? value.reason : '',
         error,
         writable: value.writable === true && !error,
-        suggest: value.writable !== true && !error && !children.length,
+        suggest: value.writable !== true && value.userLocked !== true && !error && !children.length,
+        lockable: value.lockable === true, userLocked: value.userLocked === true,
         number: typeof value.number === 'number' ? value.number : undefined,
         watch: watchOf(value.path, watches),
         depth, parent, label: typeof value.label === 'string' ? value.label : undefined,
@@ -449,7 +461,7 @@
     for (const value of m.values) visit(value);
     for (const entry of m.errors) {
       if (!entry || typeof entry.path !== 'string' || !entry.error || next.has(entry.path)) continue;
-      next.set(entry.path, { text: entry.error, full: '', reason: '', error: entry.error, writable: false, suggest: false, number: undefined, watch: entry.path, depth: 0, parent: undefined, label: undefined, expandable: false, indirect: false });
+      next.set(entry.path, { text: entry.error, full: '', reason: '', error: entry.error, writable: false, suggest: false, lockable: false, userLocked: false, number: undefined, watch: entry.path, depth: 0, parent: undefined, label: undefined, expandable: false, indirect: false });
     }
     for (const [path, r] of rows) {
       if (next.has(path)) continue;
@@ -478,9 +490,93 @@
     updateVisibility();
   }
 
+  // Suggestions use the existing watch field; focus stays in the input.
+  const suggestions = el('div', 'suggestions');
+  suggestions.id = 'watch-suggestions'; suggestions.hidden = true;
+  suggestions.setAttribute('role', 'listbox');
+  document.body.append(suggestions);
+  addInput.setAttribute('role', 'combobox');
+  addInput.setAttribute('aria-autocomplete', 'list');
+  addInput.setAttribute('aria-controls', suggestions.id);
+  addInput.setAttribute('aria-expanded', 'false');
+  /** @type {{ path: string, label: string, type: string }[]} */
+  let options = [];
+  let chosen = -1;
+  let completionId = 0;
+  let chooseOnReply = false;
+  let completionPending = false;
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let completionTimer;
+
+  function hideSuggestions() {
+    if (completionTimer !== undefined) clearTimeout(completionTimer);
+    completionTimer = undefined;
+    completionId++; completionPending = false;
+    suggestions.hidden = true; options = []; chosen = -1;
+    addInput.setAttribute('aria-expanded', 'false');
+    addInput.removeAttribute('aria-activedescendant');
+  }
+  function requestSuggestions() {
+    if (completionTimer !== undefined) clearTimeout(completionTimer);
+    completionTimer = undefined;
+    if (document.activeElement !== addInput || addInput.value.length > 1024) return;
+    completionPending = true;
+    host.postMessage({ type: 'complete', query: addInput.value.trim(), id: ++completionId });
+  }
+  function selectSuggestion(index) {
+    chosen = index;
+    for (let i = 0; i < suggestions.children.length; i++) {
+      const item = suggestions.children[i];
+      item.setAttribute('aria-selected', String(i === chosen));
+      if (i === chosen) { addInput.setAttribute('aria-activedescendant', item.id); item.scrollIntoView({ block: 'nearest' }); }
+    }
+  }
+  function acceptSuggestion() {
+    if (chosen < 0 || !options[chosen]) return false;
+    addInput.value = options[chosen].path;
+    hideSuggestions();
+    addInput.focus();
+    return true;
+  }
+  function showSuggestions(reply) {
+    if (reply.id !== completionId || reply.query !== addInput.value.trim() || document.activeElement !== addInput) return;
+    completionPending = false;
+    options = Array.isArray(reply.items) ? reply.items.slice(0, 50).filter(item => item && typeof item.path === 'string' && typeof item.type === 'string') : [];
+    chosen = -1;
+    suggestions.replaceChildren();
+    for (let i = 0; i < options.length; i++) {
+      const option = options[i];
+      const item = el('div', 'suggestion');
+      item.id = `suggestion-${i}`; item.title = `${option.path}\n${option.type}`;
+      item.setAttribute('role', 'option'); item.setAttribute('aria-selected', 'false');
+      item.append(el('span', 'suggestion-path', option.path), el('span', 'suggestion-type', option.type));
+      item.addEventListener('mousedown', event => event.preventDefault());
+      item.addEventListener('click', () => { chosen = i; acceptSuggestion(); });
+      suggestions.append(item);
+    }
+    if (!options.length) {
+      const message = el('div', 'suggestion-empty', typeof reply.message === 'string' ? reply.message : 'No matches');
+      message.title = message.textContent; suggestions.append(message);
+    }
+    const rect = addInput.getBoundingClientRect();
+    const height = Math.min(200, Math.max(24, options.length * 24));
+    suggestions.style.left = `${rect.left}px`;
+    suggestions.style.width = `${rect.width}px`;
+    suggestions.style.maxHeight = `${Math.max(24, Math.min(200, Math.max(window.innerHeight - rect.bottom, rect.top) - 4))}px`;
+    suggestions.style.top = `${window.innerHeight - rect.bottom >= height ? rect.bottom + 2 : Math.max(2, rect.top - height - 2)}px`;
+    suggestions.hidden = false;
+    addInput.setAttribute('aria-expanded', 'true');
+    addInput.removeAttribute('aria-activedescendant');
+    if (chooseOnReply && options.length) selectSuggestion(0);
+    chooseOnReply = false;
+    say(`${options.length} watch suggestions`);
+  }
+
   window.addEventListener('message', event => {
     const m = event.data;
     if (!m || typeof m !== 'object') return;
+    if (m.type === 'addFocus') { if (document.activeElement === addInput) requestSuggestions(); else addInput.focus(); return; }
+    if (m.type === 'completions') { showSuggestions(m); return; }
     if (m.type === 'expansionReply') {
       const r = rows.get(m.path);
       if (r && m.ok === false) {
@@ -504,11 +600,33 @@
   window.addEventListener('scroll', () => closeMenu(false), true);
   addForm.addEventListener('submit', event => {
     event.preventDefault();
+    if (acceptSuggestion()) return;
     const location = addInput.value.trim();
-    if (location) { send('add', location); addInput.value = ''; }
+    if (location) { send('add', location); addInput.value = ''; hideSuggestions(); }
   });
+  addInput.addEventListener('input', () => {
+    hideSuggestions(); chooseOnReply = false;
+    completionTimer = setTimeout(requestSuggestions, 120);
+  });
+  addInput.addEventListener('focus', requestSuggestions);
+  addInput.addEventListener('blur', hideSuggestions);
   addInput.addEventListener('keydown', event => {
-    if (/** @type {KeyboardEvent} */ (event).key === 'Escape') { addInput.value = ''; addInput.blur(); }
+    const key = /** @type {KeyboardEvent} */ (event);
+    if (key.isComposing) return;
+    if (key.key === 'ArrowDown' || key.key === 'ArrowUp') {
+      event.preventDefault();
+      if (suggestions.hidden) { chooseOnReply = true; requestSuggestions(); }
+      else if (options.length) selectSuggestion((chosen + (key.key === 'ArrowDown' ? 1 : chosen < 0 ? 0 : -1) + options.length) % options.length);
+    } else if ((key.key === 'Enter' || key.key === 'Tab') && chosen >= 0 && acceptSuggestion()) {
+      event.preventDefault();
+    } else if (key.key === 'Escape') {
+      event.preventDefault();
+      if (!suggestions.hidden || completionTimer !== undefined || completionPending) hideSuggestions();
+      else { addInput.value = ''; addInput.blur(); }
+    }
   });
+  window.addEventListener('blur', hideSuggestions);
+  window.addEventListener('resize', hideSuggestions);
+  document.addEventListener('scroll', event => { if (!suggestions.contains(/** @type {Node} */ (event.target))) hideSuggestions(); }, true);
   host.postMessage({ type: 'ready' });
 })();

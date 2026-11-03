@@ -158,3 +158,16 @@ export function editReason(value: InspectValue): string {
   if (value.kind === 'param') return 'The firmware applies its range and step limits.';
   return 'Direct memory write. Task-local edits can race a task state change or be overwritten by the firmware.';
 }
+
+/** Copy the payload without the display header, units, or parameter limits.
+ * Keep the original digits: converting u64/u128 through Number loses precision.
+ */
+export function rawValue(value: InspectValue): string {
+  if (value.error) return '';
+  const equals = value.display.indexOf(' = ');
+  const text = (equals < 0 ? value.display : value.display.slice(equals + 3)).trim();
+  const scalar = /^(?:[-+]?(?:0x[\da-f]+|(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?|inf(?:inity)?|nan)|true|false)(?=\s|$)/i.exec(text);
+  if (scalar) return scalar[0];
+  const quoted = /^("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/s.exec(text);
+  return quoted?.[0] ?? text;
+}
