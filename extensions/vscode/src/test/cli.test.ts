@@ -240,3 +240,8 @@ test('inspect expansion flags precede the location separator', () => {
   assert.deepEqual(inspectArgs('', [], ['ROOT.ptr']), ['inspect', '--expand', 'ROOT.ptr']);
   assert.throws(() => parseInspect(JSON.stringify({ version: 1, values: [{ path: 'PTR', type: '*mut u32', kind: 'raw', writable: false, display: '0x0', expandable: 'yes' }] })), /expansion flag/);
 });
+
+
+test('owner Stop without a session is classified as no-session', () => {
+  assert.equal(classifyFailure({ stderr: 'Error: no running session\n', code: 1, executable: 'tuning-studio' }).kind, 'no-session');
+});

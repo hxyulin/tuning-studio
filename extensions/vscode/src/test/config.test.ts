@@ -6,6 +6,34 @@ import { parseJsonc } from '../jsonc';
 import { pickLaunch, probeRsLaunches, substituteVariables } from '../launchConfig';
 import { PlanInputs, PlanSettings, resolveRunPlan } from '../runPlan';
 
+test('Cargo discovery merges ancestors and home, prefers legacy config, and records sources', async () => {
+  const { discoverCargoConfig } = await import('../cargoConfig');
+  const files = new Map([
+    ['/home/me/.cargo/config.toml', '[build]\ntarget="home"\n[target.arm]\nrunner="probe-rs run --chip Home"'],
+    ['/repo/.cargo/config.toml', '[build]\ntarget="arm"\n[target.arm]\nrunner="probe-rs run --chip Parent"'],
+    ['/repo/app/.cargo/config', '[target.arm]\nrunner="probe-rs run --chip Child"'],
+    ['/repo/app/.cargo/config.toml', '[build]\ntarget="ignored"'],
+  ]);
+  const config = await discoverCargoConfig('/repo/app', '/home/me/.cargo', async file => files.get(file));
+  assert.deepEqual(config.buildTargets, ['arm']);
+  assert.equal(config.buildSource, '/repo/.cargo/config.toml');
+  assert.equal(chipFromRunner(config.runners.get('arm')!), 'Child');
+  assert.equal(config.runnerSources?.get('arm'), '/repo/app/.cargo/config');
+});
+
+test('Cargo discovery concatenates arrays and rejects changes between arrays and strings', async () => {
+  const { discoverCargoConfig } = await import('../cargoConfig');
+  const files = new Map([
+    ['/repo/.cargo/config.toml', '[build]\ntarget=["a"]\n[target.a]\nrunner=["probe-rs"]'],
+    ['/repo/app/.cargo/config.toml', '[build]\ntarget=["b"]\n[target.a]\nrunner=["run", "--chip", "Chip"]'],
+  ]);
+  const config = await discoverCargoConfig('/repo/app', '/home/me/.cargo', async file => files.get(file));
+  assert.deepEqual(config.buildTargets, ['a', 'b']);
+  assert.deepEqual(config.runners.get('a'), ['probe-rs', 'run', '--chip', 'Chip']);
+  files.set('/repo/app/.cargo/config.toml', '[build]\ntarget="b"');
+  await assert.rejects(discoverCargoConfig('/repo/app', '/home/me/.cargo', async file => files.get(file)), /changes type/);
+});
+
 test('JSONC: comments and trailing commas are dropped, strings kept', () => {
   const text = `{
     // a comment
@@ -244,4 +272,19 @@ test('run plan: the selected target is built and conflicting cargo arguments sto
   const conflict = resolveRunPlan(inputs({ settings: { ...settings, cargoArgs: ['--target=other'] } }));
   assert.equal(conflict.command, undefined);
   assert.ok(conflict.problems.some((p) => p.includes('instead of passing --target')));
+});
+
+test('run plan uses Cargo environment overrides and reports inherited config errors', () => {
+  const plan = resolveRunPlan(inputs({
+    cargo: parseCargoConfig('[build]\ntarget="file-target"'),
+    env: { CARGO_BUILD_TARGET: 'arm', CARGO_TARGET_ARM_RUNNER: 'probe-rs run --chip EnvChip' },
+  }));
+  assert.equal(plan.triple?.value, 'arm');
+  assert.equal(plan.triple?.source, 'CARGO_BUILD_TARGET');
+  assert.equal(plan.chip?.value, 'EnvChip');
+  assert.equal(plan.chip?.source, 'CARGO_TARGET_ARM_RUNNER');
+  assert.equal(plan.command?.kind, 'cargo');
+  const failed = resolveRunPlan(inputs({ cargoError: 'Cargo runner changes type', settings: { chip: 'Chip', cargoTarget: 'arm' } }));
+  assert.equal(failed.command, undefined);
+  assert.match(failed.problems.join(' '), /changes type/);
 });

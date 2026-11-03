@@ -27,8 +27,8 @@ use studio_dwarf::tree::{self, NodeKind, Step};
 use studio_dwarf::{ElfInfo, ElfParser};
 
 use action::{
-    Action, BreakArgs, DeleteArgs, FlashArgs, InspectArgs, ReadArgs, ResetArgs, SetArgs, TasksArgs,
-    TraceArgs, WatchArgs,
+    Action, BreakArgs, DeleteArgs, FlashArgs, InspectArgs, ReadArgs, ResetArgs, SetArgs, StopArgs,
+    TasksArgs, TraceArgs, WatchArgs,
 };
 use flash::AfterReset;
 use memory::Memory;
@@ -181,6 +181,13 @@ enum Command {
     Erase {
         #[command(flatten)]
         probe: ProbeArgs,
+    },
+    /// End a session started by the matching owner, with normal detach cleanup
+    Stop {
+        #[arg(long)]
+        probe: Option<String>,
+        #[command(flatten)]
+        args: StopArgs,
     },
     /// List the connected debug probes
     List,
@@ -415,6 +422,11 @@ fn main() -> Result<()> {
         Command::Resume { target } => run_control(&target, Action::Resume, debug::resume)?,
         Command::Step { target } => run_control(&target, Action::Step, debug::step)?,
         Command::Status { target } => run_control(&target, Action::Status, |_| Ok(()))?,
+        Command::Stop { probe, args } => {
+            let session =
+                daemon::find(probe.as_deref())?.ok_or_else(|| anyhow!("no running session"))?;
+            daemon::request(session, Action::Stop(args).to_words())?;
+        }
         Command::Break { probe, args } => {
             let session = daemon::find(probe.as_deref())?.ok_or_else(no_session_for_breakpoints)?;
             daemon::request(session, Action::Break(args).to_words())?;

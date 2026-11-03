@@ -42,6 +42,12 @@ defmt logs. `cargo` mode uses the `$rustc` problem matcher, so build errors
 reach the Problems view. The runner override replaces any runner in
 `.cargo/config.toml`, such as `probe-rs run`, for this run only.
 
+Cargo configuration is read from Cargo home and from the workspace folder's
+ancestors, with nearer files taking precedence. The legacy `.cargo/config`
+filename wins over `config.toml` when both exist. Arrays merge as Cargo arrays do.
+`CARGO_BUILD_TARGET` and target runner environment variables override file values.
+The Session tooltips show the configuration file that supplied each value.
+
 Each input comes from the first source that has it:
 
 | Input | Settings | launch.json | Cargo |
@@ -84,8 +90,11 @@ Use a process or shell task rather than a task consisting only of dependencies.
 ### Stop
 
 Stop terminates only the build or session that Run started. A session started
-in a terminal shows as `external`; stop it there. Stopping the task closes its
-terminal, so the CLI does not get Ctrl-C and skips its normal detach.
+in a terminal shows as `external`; stop it there. Stop closes the task
+terminal only while a build is running. For a running session, Stop sends an
+owner-checked detach request. The CLI clears breakpoints, resumes a halted core,
+and exits through its normal cleanup. A failed detach leaves the terminal open
+and reports the reason. This needs a matching CLI with the `stop --owner` command.
 
 ## Probe
 
@@ -99,7 +108,12 @@ list` and marks the ones that have a session.
 
 Each poll runs `tuning-studio inspect` for the declared values, then
 `tuning-studio inspect <locations...>` for the locations you added. Commands run
-one at a time through one queue. The next poll starts `tuningStudio.pollInterval`
+one at a time through one queue. If the whole added-watch call fails on a
+location, Live Watch retries locations separately and shows each failure on its
+own row. Recovery reads at most eight locations per poll, rotates through longer
+lists, and stops starting retries after five seconds. Session and transport
+failures are not retried. A failed read never contributes a stale plot sample.
+The next poll starts `tuningStudio.pollInterval`
 ms after the previous one started, or at once if it took longer.
 
 Each value takes one row: the name on the left, the value on the right.
@@ -229,14 +243,13 @@ The plot has no demo data. Without a session it stays empty.
 
 ## Limitations
 
-- Only the first workspace folder is used, and only its own `.cargo/config.toml`,
-  not ones in parent directories.
+- Only the first workspace folder is used.
+- Cargo discovery reads target and runner keys. It does not evaluate `cfg(...)`
+  runner conditions, config `include`, or `--config` overrides in `cargoArgs`.
 - Cargo splits a runner from the environment on whitespace, so `cargo` mode
   refuses an executable path or probe selector with spaces. Use `task` mode.
 - A location the CLI reports under a different path is matched by position, and
   only when the call returned one value per location.
-- When one added location makes the whole `inspect` call fail, every added
-  location shows that error.
 - `inspect`'s optional `tasks` field is ignored; Tasks uses `tuning-studio tasks`.
 
 ## Hardware validation

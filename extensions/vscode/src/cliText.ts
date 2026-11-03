@@ -73,7 +73,7 @@ export function classifyFailure(input: {
     return { kind: 'timeout', message: 'the command did not finish in time' };
   }
   const message = errorMessage(input.stderr) || `exited with ${input.code ?? 'an error'}`;
-  if (message.includes('--chip is needed when no `run` or `attach` is running')) {
+  if (message === 'no running session' || message.includes('--chip is needed when no `run` or `attach` is running')) {
     return { kind: 'no-session', message: 'No running session' };
   }
   const several = /sessions are running for several probes \(([^)]*)\)/.exec(message);

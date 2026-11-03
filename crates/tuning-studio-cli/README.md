@@ -232,3 +232,13 @@ individual polls.
 with the ELF's defmt table, with timestamps and levels. Other channels print as
 text. The session catches a HardFault, so firmware that panics through
 `panic-probe` halts where it failed, after its message prints.
+
+### Session owner detach
+
+Programs that start a session can set `TUNING_STUDIO_OWNER_TOKEN` to a unique
+value, then request normal cleanup with `tuning-studio stop --owner <token>`
+(and `--probe` when needed). This command only contacts a running session. It
+refuses missing or different owner tokens. The VS Code extension uses it for
+Stop; external terminal sessions still end with Ctrl-C or interactive `quit`.
+The token prevents stopping a different run by mistake. It is not an
+access-control boundary against other processes running as the same user.

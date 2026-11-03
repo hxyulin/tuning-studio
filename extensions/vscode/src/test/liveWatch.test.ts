@@ -28,6 +28,47 @@ function load(module: string): Record<string, unknown> {
   return exports;
 }
 
+test('whole-call watch failures recover individual values without plotting failed or stale rows', async () => {
+  let timeout = false;
+  const individual: string[] = [];
+  const cli = { run: async (args: string[]) => {
+    const locations = args.includes('--') ? args.slice(args.indexOf('--') + 1) : [];
+    if (!locations.length) return { ok: true, stdout: '{"version":1,"values":[]}', stderr: '' };
+    if (locations.length === 1) individual.push(locations[0]);
+    if (timeout || locations.length > 1 || locations[0] === 'bad') return {
+      ok: false, stdout: '', stderr: '', failure: { kind: timeout ? 'timeout' : 'failed', message: timeout ? 'timeout' : 'unknown symbol bad' },
+    };
+    return { ok: true, stderr: '', stdout: JSON.stringify({ version: 1, values: [{
+      path: locations[0], type: 'u32', kind: 'raw', writable: true, display: '12', number: 12,
+    }] }) };
+  } };
+  const Watch = load('liveWatch').LiveWatch as new (...args: unknown[]) => LiveWatch;
+  const paths = ['bad', ...Array.from({ length: 9 }, (_, i) => `good${i}`)];
+  const state = { get: (key: string, fallback: unknown) => key === 'tuningStudio.watches' ? paths : fallback, update: async () => {} };
+  const watch = new Watch(cli, { isReady: true, onDidChange: () => ({ dispose() {} }), markFailure() {}, markLost() {} }, state);
+  const samples: PollSample[] = [];
+  watch.onDidSample(sample => samples.push(sample));
+  const poll = () => (watch as unknown as { poll(): Promise<void> }).poll();
+  await poll();
+  assert.equal(watch.lookup('bad')?.error, 'unknown symbol bad');
+  assert.equal(watch.lookup('bad')?.writable, false);
+  assert.equal(watch.lookup('good0')?.number, 12);
+  assert.equal(watch.watchedError, undefined);
+  assert.equal(samples[0].numbers.get('good0'), 12);
+  assert.equal(samples[0].numbers.has('bad'), false);
+  assert.equal(individual.length, 8);
+  await poll();
+  assert.equal(individual.length, 16);
+  assert.equal(new Set(individual).size, 10, 'recovery rotates through long lists');
+  timeout = true;
+  await poll();
+  assert.equal(individual.length, 16, 'transport failures are not retried');
+  assert.equal(watch.watchedValues.size, 0, 'stale writable rows are cleared');
+  assert.equal(watch.watchedError, 'timeout');
+  assert.equal(samples[2].numbers.size, 0);
+  watch.dispose();
+});
+
 test('numeric struct fields reach plot buffers without expanding their watch rows', async () => {
   const stdout = JSON.stringify({ version: 1, values: [{
     path: 'motor.state', type: 'MotorSnapshot', kind: 'watch', writable: false,

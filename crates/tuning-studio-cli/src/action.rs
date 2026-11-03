@@ -47,6 +47,25 @@ pub enum Action {
     },
     /// Print the core status, breakpoints and watches
     Status,
+    /// End a session started with the matching TUNING_STUDIO_OWNER_TOKEN
+    Stop(StopArgs),
+}
+
+#[derive(Args, Debug, PartialEq)]
+pub struct StopArgs {
+    /// Token supplied by the program that started the session
+    #[arg(long)]
+    pub owner: String,
+}
+
+impl StopArgs {
+    pub fn authorize(&self, owner: Option<&str>) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self.owner.is_empty() && owner == Some(self.owner.as_str()),
+            "session owner does not match; stop it in its terminal"
+        );
+        Ok(())
+    }
 }
 
 #[derive(Args, Debug, PartialEq)]
@@ -220,7 +239,30 @@ impl Action {
                 }
             }
             Action::Status => push(&mut words, &["status"]),
+            Action::Stop(args) => push(&mut words, &["stop", "--owner", &args.owner]),
         }
         words
+    }
+}
+
+#[cfg(test)]
+mod stop_tests {
+    use super::StopArgs;
+
+    #[test]
+    fn stop_requires_the_current_nonempty_owner() {
+        let args = StopArgs {
+            owner: "run-123".into(),
+        };
+        assert!(args.authorize(Some("run-123")).is_ok());
+        assert!(args.authorize(Some("another-run")).is_err());
+        assert!(args.authorize(None).is_err());
+        assert!(
+            StopArgs {
+                owner: String::new()
+            }
+            .authorize(Some(""))
+            .is_err()
+        );
     }
 }

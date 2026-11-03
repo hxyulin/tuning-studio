@@ -36,6 +36,7 @@ export class LiveWatch implements vscode.Disposable {
   private blocked = 0;
   private wasActive = false;
   private running = false;
+  private retryOffset = 0;
   private timer?: NodeJS.Timeout;
   private readonly startTime = performance.now();
   private readonly changed = new vscode.EventEmitter<void>();
@@ -200,6 +201,7 @@ export class LiveWatch implements vscode.Disposable {
       const locations = [...this.watched];
       if (locations.length > 0 && this.session.isReady) {
         const watched = await this.cli.run(inspectArgs(probe(), locations, this.expansionPaths()), { timeoutMs: 5000 });
+        this.watchedValues = new Map();
         const watchedOk = this.apply(
           watched,
           (values) => {
@@ -210,6 +212,12 @@ export class LiveWatch implements vscode.Disposable {
           (message) => (this.watchedError = message),
         );
         ok ||= watchedOk;
+        // JSON already carries per-location failures. Retry only a whole-call
+        // location failure, never timeouts, missing CLIs, or a lost session.
+        if (!watchedOk && !watched.ok && watched.failure.kind === 'failed'
+          && !watched.stdout.trim().startsWith('{') && locations.length > 1 && this.active) {
+          ok = await this.isolateWatches(locations, fresh) || ok;
+        }
       }
       if (ok) {
         this.lastSuccess = new Date();
@@ -230,6 +238,42 @@ export class LiveWatch implements vscode.Disposable {
       const wait = Math.max(0, pollInterval() - (performance.now() - started));
       this.timer = setTimeout(() => void this.poll(), wait);
     }
+  }
+
+  private async isolateWatches(locations: string[], fresh: InspectValue[]): Promise<boolean> {
+    const errorValue = (path: string, error: string): InspectValue => ({
+      path, type: '', kind: 'raw', writable: false, display: error, error,
+    });
+    const freshStart = fresh.length;
+    for (const location of locations) this.watchedValues.set(location, [errorValue(location, 'Waiting for an individual read')]);
+    this.watchedError = undefined;
+    let ok = false;
+    // Bound recovery work and rotate so long lists do not starve later watches.
+    const count = Math.min(locations.length, 8);
+    const started = performance.now();
+    let attempted = 0;
+    for (; attempted < count && this.active; attempted++) {
+      if (attempted > 0 && performance.now() - started >= 5000) break;
+      const location = locations[(this.retryOffset + attempted) % locations.length];
+      const result = await this.cli.run(inspectArgs(probe(), [location], this.expansionPaths()), { timeoutMs: 5000 });
+      const read = this.apply(result, values => {
+        this.watchedValues.set(location, matchLocations([location], values).get(location) ?? []);
+        fresh.push(...values);
+      }, message => this.watchedValues.set(location, [errorValue(location, message)]));
+      ok ||= read;
+      if (!result.ok && result.failure.kind !== 'failed') {
+        const message = result.failure.message;
+        for (const pending of locations) {
+          this.watchedValues.set(pending, [errorValue(pending, message)]);
+        }
+        // A transport/session failure invalidates earlier recovery samples too.
+        fresh.splice(freshStart);
+        this.watchedError = message;
+        break;
+      }
+    }
+    this.retryOffset = (this.retryOffset + Math.max(1, attempted)) % locations.length;
+    return ok;
   }
 
   /**

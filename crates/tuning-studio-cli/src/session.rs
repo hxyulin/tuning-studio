@@ -571,6 +571,11 @@ fn handle(
                 describe_watch(out, watch)?;
             }
         }
+        SessionCommand::Action(Action::Stop(args)) => {
+            args.authorize(std::env::var("TUNING_STUDIO_OWNER_TOKEN").ok().as_deref())?;
+            writeln!(out, "stopping session")?;
+            return Ok(Outcome::Quit);
+        }
         SessionCommand::Quit if sink == Sink::Stdout => return Ok(Outcome::Quit),
         SessionCommand::Quit => bail!("only the terminal running the session can end it"),
     }
@@ -933,6 +938,9 @@ mod tests {
             flash(Some("/tmp/fw.elf"), false, false, false),
             flash(None, true, false, false),
             Action::Status,
+            Action::Stop(crate::action::StopArgs {
+                owner: "run-123".into(),
+            }),
         ];
         for action in actions {
             let words = action.to_words();

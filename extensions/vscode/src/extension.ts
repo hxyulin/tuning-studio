@@ -13,7 +13,7 @@ import { TasksTree } from './tasksView';
 import { single, WatchNode, WatchTree } from './watchView';
 import { WatchPanel } from './watchPanel';
 import { insertMutableWatch, suggestMutableWatch } from './sourceSuggestion';
-import { currentPlan, primaryFolder, readPlanInputs } from './workspaceInputs';
+import { currentPlan, inheritedCargoDirectories, primaryFolder, readPlanInputs } from './workspaceInputs';
 
 const PLOT_WINDOW_KEY = 'tuningStudio.plotWindow';
 
@@ -455,10 +455,15 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const folder = primaryFolder();
   const watchers = folder
-    ? ['.vscode/launch.json', '.cargo/config.toml', '.cargo/config', 'Cargo.toml'].map((p) =>
+    ? ['.vscode/launch.json', 'Cargo.toml'].map((p) =>
         vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(folder, p)),
       )
     : [];
+  if (folder) for (const dir of inheritedCargoDirectories(folder)) {
+    watchers.push(vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(vscode.Uri.file(dir), '{config,config.toml}'),
+    ));
+  }
   for (const watcher of watchers) {
     watcher.onDidChange(() => void refreshPlan());
     watcher.onDidCreate(() => void refreshPlan());

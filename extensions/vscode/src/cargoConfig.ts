@@ -1,3 +1,5 @@
+import * as path from 'node:path';
+
 /**
  * The two things the extension needs from `.cargo/config.toml`: the build target
  * and each target's runner. This reads only those keys, not general TOML.
@@ -7,6 +9,10 @@ export interface CargoConfig {
   buildTargets: string[];
   /** `target.<triple>.runner`, split into words as Cargo splits a string runner. */
   runners: Map<string, string[]>;
+  buildTargetKind?: 'string' | 'array';
+  runnerKinds?: Map<string, 'string' | 'array'>;
+  buildSource?: string;
+  runnerSources?: Map<string, string>;
 }
 
 export function parseCargoConfig(text: string): CargoConfig {
@@ -42,8 +48,10 @@ export function parseCargoConfig(text: string): CargoConfig {
       continue;
     }
     if (key.length === 2 && key[0] === 'build' && key[1] === 'target') {
+      config.buildTargetKind = typeof value === 'string' ? 'string' : 'array';
       config.buildTargets = typeof value === 'string' ? [value] : value;
     } else if (key.length === 3 && key[0] === 'target' && key[2] === 'runner') {
+      (config.runnerKinds ??= new Map()).set(key[1], typeof value === 'string' ? 'string' : 'array');
       config.runners.set(key[1], typeof value === 'string' ? splitWords(value) : value);
     }
   }
@@ -173,4 +181,50 @@ function parseString(text: string): { value: string; rest: string } | undefined 
     }
   }
   return undefined;
+}
+
+/** Read the supported Cargo keys from Cargo home, then ancestors, then cwd. */
+export async function discoverCargoConfig(
+  cwd: string,
+  cargoHome: string,
+  read: (file: string) => Promise<string | undefined>,
+): Promise<CargoConfig> {
+  const merged: CargoConfig = { buildTargets: [], runners: new Map(), runnerKinds: new Map(), runnerSources: new Map() };
+  for (const dir of cargoConfigDirectories(cwd, cargoHome)) {
+    // Cargo prefers the legacy filename when both exist.
+    let file = path.join(dir, 'config');
+    let text = await read(file);
+    if (text === undefined) { file = path.join(dir, 'config.toml'); text = await read(file); }
+    if (text === undefined) continue;
+    const config = parseCargoConfig(text);
+    if (config.buildTargetKind) {
+      if (merged.buildTargetKind && merged.buildTargetKind !== config.buildTargetKind) {
+        throw new Error(`Cargo build.target changes type in ${file}`);
+      }
+      merged.buildTargets = config.buildTargetKind === 'array'
+        ? [...merged.buildTargets, ...config.buildTargets] : config.buildTargets;
+      merged.buildTargetKind = config.buildTargetKind;
+      merged.buildSource = file;
+    }
+    for (const [target, runner] of config.runners) {
+      const kind = config.runnerKinds!.get(target)!;
+      const previous = merged.runnerKinds!.get(target);
+      if (previous && previous !== kind) throw new Error(`Cargo runner for ${target} changes type in ${file}`);
+      merged.runners.set(target, kind === 'array' ? [...(merged.runners.get(target) ?? []), ...runner] : runner);
+      merged.runnerKinds!.set(target, kind);
+      merged.runnerSources!.set(target, file);
+    }
+  }
+  return merged;
+}
+
+/** Configuration directories from lowest to highest precedence, without duplicates. */
+export function cargoConfigDirectories(cwd: string, cargoHome: string): string[] {
+  const dirs: string[] = [];
+  for (let dir = path.resolve(cwd);; dir = path.dirname(dir)) {
+    dirs.push(path.join(dir, '.cargo'));
+    if (path.dirname(dir) === dir) break;
+  }
+  const ordered = [path.resolve(cargoHome), ...dirs.reverse()];
+  return ordered.filter((dir, i) => ordered.lastIndexOf(dir) === i);
 }

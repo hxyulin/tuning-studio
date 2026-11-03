@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { randomUUID } from 'node:crypto';
 import { Cli } from './cli';
 import { Failure, statusArgs } from './cliText';
 import { RunCommand } from './runPlan';
@@ -25,6 +26,8 @@ export class SessionController implements vscode.Disposable {
   private owned?: vscode.TaskExecution;
   private ownedRole?: 'build' | 'run';
   private stopRequested = false;
+  private owner?: { token: string; probe: string };
+  private stopping?: Promise<void>;
   private checkTimer?: NodeJS.Timeout;
   private inflight?: Promise<SessionState>;
   private monitorWanted = false;
@@ -162,6 +165,7 @@ export class SessionController implements vscode.Disposable {
       );
       return;
     }
+    const runProbe = probe();
     const before = await this.check();
     if (before.kind === 'ready') {
       void vscode.window.showInformationMessage(
@@ -202,7 +206,9 @@ export class SessionController implements vscode.Disposable {
       }
     }
 
-    const task = runTask(command, folder);
+    const owner = { token: randomUUID(), probe: runProbe };
+    this.owner = owner;
+    const task = runTask(command, folder, owner.token);
     this.log.appendLine(
       command.kind === 'cargo'
         ? `Starting cargo ${command.args.join(' ')} with ${Object.entries(command.env)
@@ -236,16 +242,44 @@ export class SessionController implements vscode.Disposable {
   }
 
   /** Stop the build or session Run started. Sessions started elsewhere are left alone. */
-  stop(): void {
-    if (!this.owned) {
+  stop(): Promise<void> {
+    this.stopping ??= this.stopOwned().finally(() => { this.stopping = undefined; });
+    return this.stopping;
+  }
+
+  private async stopOwned(): Promise<void> {
+    const execution = this.owned;
+    if (!execution) {
       void vscode.window.showInformationMessage(
         'Tuning Studio did not start this session. Stop it in the terminal that runs it.',
       );
       return;
     }
     this.stopRequested = true;
+    this.emitter.fire(this.stateValue);
     this.log.appendLine('Stopping the session Run started.');
-    this.owned.terminate();
+    if (this.ownedRole === 'build' || !this.owner) {
+      execution.terminate();
+      return;
+    }
+    const owner = this.owner;
+    const result = await this.cli.run(
+      ['stop', ...(owner.probe.trim() ? ['--probe', owner.probe.trim()] : []), '--owner', owner.token],
+      { timeoutMs: 5000 },
+    );
+    if (this.owned !== execution) return;
+    if (result.ok) {
+      // Let the session clear breakpoints, resume the core, and exit itself.
+      this.log.appendLine('Detach requested; waiting for Run to exit.');
+    } else if (result.failure.kind === 'no-session' && this.stateValue.kind === 'starting') {
+      // Cargo may still be compiling, before there is a session to detach.
+      execution.terminate();
+    } else {
+      this.stopRequested = false;
+      this.emitter.fire(this.stateValue);
+      this.log.appendLine(`Could not stop: ${result.failure.message}`);
+      void vscode.window.showErrorMessage(`Could not stop: ${result.failure.message}. Stop Run in its terminal.`);
+    }
   }
 
   private pendingEnd?: { execution: vscode.TaskExecution; resolve: (code: number | undefined) => void };
@@ -260,6 +294,7 @@ export class SessionController implements vscode.Disposable {
     });
     this.owned = undefined;
     this.ownedRole = undefined;
+    this.owner = undefined;
     return code;
   }
 
@@ -301,12 +336,12 @@ async function findTask(label: string, folder: vscode.WorkspaceFolder): Promise<
   );
 }
 
-function runTask(command: RunCommand, folder: vscode.WorkspaceFolder): vscode.Task {
+function runTask(command: RunCommand, folder: vscode.WorkspaceFolder, owner: string): vscode.Task {
   const cwd = folder.uri.fsPath;
   const execution =
     command.kind === 'cargo'
-      ? new vscode.ProcessExecution('cargo', command.args, { cwd, env: command.env })
-      : new vscode.ProcessExecution(command.executable, command.args, { cwd });
+      ? new vscode.ProcessExecution('cargo', command.args, { cwd, env: { ...command.env, TUNING_STUDIO_OWNER_TOKEN: owner } })
+      : new vscode.ProcessExecution(command.executable, command.args, { cwd, env: { TUNING_STUDIO_OWNER_TOKEN: owner } });
   const task = new vscode.Task(
     { type: TASK_TYPE, action: 'run' },
     folder,

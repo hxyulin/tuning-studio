@@ -25,6 +25,7 @@ export interface PlanInputs {
   /** Why launch.json could not be read, when it exists but does not parse. */
   launchError?: string;
   cargo?: CargoConfig;
+  cargoError?: string;
   hasCargoToml: boolean;
 }
 
@@ -69,6 +70,7 @@ export interface RunPlan {
 export function resolveRunPlan(inputs: PlanInputs): RunPlan {
   const { settings } = inputs;
   const plan: RunPlan = { problems: [], notes: [] };
+  if (inputs.cargoError) plan.problems.push(inputs.cargoError);
   if (inputs.launchError) {
     plan.notes.push(`launch.json: ${inputs.launchError}`);
   }
@@ -83,19 +85,22 @@ export function resolveRunPlan(inputs: PlanInputs): RunPlan {
 
   const triple = settings.cargoTarget.trim()
     ? { value: settings.cargoTarget.trim(), source: 'settings' }
+    : inputs.env.CARGO_BUILD_TARGET?.trim()
+      ? { value: inputs.env.CARGO_BUILD_TARGET.trim(), source: 'CARGO_BUILD_TARGET' }
     : inputs.cargo?.buildTargets.length === 1
-      ? { value: inputs.cargo.buildTargets[0], source: '.cargo/config.toml' }
+      ? { value: inputs.cargo.buildTargets[0], source: inputs.cargo.buildSource ?? '.cargo/config.toml' }
       : undefined;
   plan.triple = triple;
   const runner = triple ? inputs.cargo?.runners.get(triple.value) : undefined;
-  const runnerChip = runner ? chipFromRunner(runner) : undefined;
+  const runnerEnv = triple ? inputs.env[runnerEnvName(triple.value)] : undefined;
+  const runnerChip = runnerEnv !== undefined ? chipFromRunner(runnerEnv.split(/\s+/).filter(Boolean)) : runner ? chipFromRunner(runner) : undefined;
 
   if (settings.chip.trim()) {
     plan.chip = { value: settings.chip.trim(), source: 'settings' };
   } else if (launch?.chip) {
     plan.chip = { value: launch.chip, source: launchSource };
   } else if (runnerChip) {
-    plan.chip = { value: runnerChip, source: 'Cargo runner' };
+    plan.chip = { value: runnerChip, source: runnerEnv !== undefined && triple ? runnerEnvName(triple.value) : triple ? inputs.cargo?.runnerSources?.get(triple.value) ?? 'Cargo runner' : 'Cargo runner' };
   }
 
   if (settings.elf.trim()) {
