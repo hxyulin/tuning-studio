@@ -18,8 +18,9 @@
 Live data from an STM32H723 over SWD. The [plot demo](firmware/select-lab#plot-demo)
 publishes three phase-shifted waves alongside the lab's Embassy tasks.
 
-The [native desktop app](crates/tuning-studio-desktop) provides an egui Live Watch
-with inline edits, expandable fields, autocomplete, and halt/resume controls.
+The [native desktop app](crates/tuning-studio-desktop) provides Live Watch and a
+multi-value plot with zoom and pan. It includes inline edits, expandable fields,
+autocomplete, and halt/resume controls.
 Build it with `cargo build --locked -p tuning-studio-cli -p tuning-studio-desktop`,
 then run `target/debug/tuning-studio-desktop`. Select the matching firmware ELF
 and connect to a probe. It shares the existing CLI backend and firmware API.

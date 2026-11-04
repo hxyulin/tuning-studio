@@ -1,6 +1,6 @@
 # Tuning Studio desktop
 
-An egui desktop app for Live Watch. It uses the same backend as the CLI and
+An egui desktop app for Live Watch and plotting. It uses the same backend as the CLI and
 VS Code extension, including `watch!` snapshots, `watch_mut!` edit mailboxes,
 ranged parameters, structs, pointers, and supported Rust wrappers.
 
@@ -70,8 +70,38 @@ lifetime caveats.
 
 The app's Session log includes firmware logs and backend errors. No extra RTT
 producer is needed for raw watches or the existing API snapshots/mailboxes.
-This initial app concentrates on watch/edit use. RTT sample capture and a native
-plot panel are follow-on work; it does not add a new firmware streaming protocol.
+## Plot
+
+The single plot shares the existing polling samples with Live Watch. No extra
+firmware code is needed for `watch!`, `watch_mut!`, parameter, or raw scalar plots.
+
+- Use the plot's **+** menu, a watch's **Add to plot** context action, or drag a
+  numeric watch name onto the plot. Up to 16 values share one time axis and y-scale.
+- Click a legend name to hide/show it. Its samples keep accumulating while hidden.
+  Click its small **×** to remove it. The **×** beside the title hides the panel;
+  **Show plot** in the toolbar restores it without removing values.
+- Click the title to rename it. Drag the divider between Live Watch and the plot
+  to resize the watch panel.
+- **Live** follows new samples and fits the visible values. **Freeze** holds the
+  view while acquisition continues. Panning or zooming also freezes the view.
+- Drag within the plot to pan. Drag the bottom axis horizontally or the left axis
+  vertically to stretch that axis. Pinch or Ctrl-scroll to zoom; normal scrolling
+  pans. Right-drag a box to zoom into it. Double-click resumes Live.
+- Set the visible time window with the seconds control. **Fit** fits that window
+  at the latest sample. **Clear** removes captured history without removing values.
+- Plot title, membership, visibility, and time window persist across launches.
+  Sample history stays in memory and starts empty on launch.
+
+History is limited to ten minutes and 12,000 samples per value. Frozen views use
+that same buffer, so old data can expire as acquisition continues. Pauses, failed
+reads, non-finite values, and long sample gaps break the line. Plotted fields keep
+being polled after their parent struct is collapsed or their manual watch removed.
+
+The x-axis uses host receipt time in seconds since app launch. Values from one
+poll can come from separate target reads. Numbers are plotted as `f64`; integers
+above 2^53 can lose precision on the graph, while Live Watch copying stays exact.
+This is low-rate polling rather than RTT capture. RTT streaming and sample export
+remain follow-on work; this version adds no firmware streaming protocol.
 
 ## Validation
 

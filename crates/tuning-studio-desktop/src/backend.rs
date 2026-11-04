@@ -303,6 +303,7 @@ impl Worker {
                 self.config.expanded = config.expanded;
                 self.config.locked = config.locked;
                 self.config.poll_ms = config.poll_ms;
+                self.config.plot = config.plot;
             }
             Work::Polling(paused) => self.paused = paused,
             Work::List(cli) => match Command::new(cli).arg("list").output() {
@@ -424,7 +425,8 @@ impl Worker {
             Err(e) => (vec![], Some(format!("{e:#}"))),
         };
         let mut watched = Vec::new();
-        for path in &self.config.watches {
+        let paths = watched_paths(&self.config, &declared);
+        for path in &paths {
             let values = self.inspect(Some(path)).unwrap_or_else(|error| {
                 vec![Value {
                     path: path.clone(),
@@ -454,10 +456,36 @@ impl Worker {
     }
 }
 
+// Keep plotted fields sampled independently of the Live Watch disclosure state.
+fn watched_paths(config: &Saved, declared: &[Value]) -> Vec<String> {
+    let mut paths = config.watches.clone();
+    for series in &config.plot.series {
+        if model::find(declared, &series.path).is_none() && !paths.contains(&series.path) {
+            paths.push(series.path.clone());
+        }
+    }
+    paths
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::os::unix::net::UnixStream;
+
+    #[test]
+    fn plotted_fields_survive_collapsing_or_removing_their_watch() {
+        let mut config = Saved::default();
+        config.plot.add("state.speed");
+        let expanded = model::parse_values(r#"{"version":1,"values":[{"path":"state","type":"State","kind":"watch","writable":false,"display":"state","children":[{"path":"state.speed","type":"f32","kind":"watch","writable":false,"display":"speed = 3"}]}]}"#).unwrap();
+        assert!(watched_paths(&config, &expanded).is_empty());
+        let mut collapsed = expanded;
+        collapsed[0].children.clear();
+        assert_eq!(watched_paths(&config, &collapsed), ["state.speed"]);
+        config.watches.push("state.speed".into());
+        assert_eq!(watched_paths(&config, &collapsed), ["state.speed"]);
+        config.watches.clear();
+        assert_eq!(watched_paths(&config, &collapsed), ["state.speed"]);
+    }
 
     #[test]
     fn socket_exchange_collects_output_and_reports_backend_rejections() {

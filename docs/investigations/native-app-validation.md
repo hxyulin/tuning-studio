@@ -45,13 +45,30 @@ cargo doc --workspace --no-deps --locked
 ```
 
 The workspace tests passed with one opt-in real-firmware ELF test ignored.
-The new native app has three tests covering model behavior and socket replies.
+The native app has eight tests covering model behavior, socket replies, bounded
+plot history, missing samples, and plot interactions. Graph interaction tests feed
+pointer events through egui to verify drag-to-add and independent x/y axis
+stretching. They also verify that new samples do not reset the inspected view.
 UI interactions above were checked manually in the native app, not by those tests.
+
+## Graphing pass
+
+The native plot was tested with the same board and firmware at 500 ms polling.
+Motor speed and setpoint were added through the plot menu. Changing the setpoint
+from 100 to 80 produced new values in both Live Watch and the shared plot. Inline
+plot renaming, clicking the legend to hide a value, and holding the view while
+polling continued were checked in the native window. Removing and re-adding a
+series worked. Relaunching restored the title and series. The setpoint was
+returned to 100, and its step appeared alongside motor speed in the final graph.
+Plotted fields are included
+in polling even when absent from the expanded watch tree; a test covers collapsing
+and removing their manual watches without losing the acquisition path.
 
 ## Limits of this validation
 
 Linux, reusing an externally owned session, probe removal during a write, and
 multiple connected probes were not tested on hardware. Pointer and wrapper
 decoding use the existing backend; this board session exercised nested structs
-and scalar fields rather than every wrapper type. The app does not add plots,
-RTT streaming, breakpoints, or a DAP server.
+and scalar fields rather than every wrapper type. The app does not add RTT
+streaming, breakpoints, or a DAP server. Plots use host receipt times and the
+existing low-rate reads, not target timestamped samples.

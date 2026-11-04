@@ -1,5 +1,6 @@
 mod backend;
 mod model;
+mod plot;
 mod ui;
 
 use clap::Parser;

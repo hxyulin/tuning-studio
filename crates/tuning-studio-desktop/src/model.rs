@@ -168,6 +168,7 @@ pub struct Saved {
     pub watches: Vec<String>,
     pub expanded: BTreeSet<String>,
     pub locked: BTreeSet<String>,
+    pub plot: crate::plot::Settings,
 }
 
 impl Default for Saved {
@@ -182,6 +183,7 @@ impl Default for Saved {
             watches: Vec::new(),
             expanded: BTreeSet::new(),
             locked: BTreeSet::new(),
+            plot: crate::plot::Settings::default(),
         }
     }
 }

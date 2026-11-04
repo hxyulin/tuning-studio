@@ -39,6 +39,7 @@ pub struct App {
     paused: bool,
     logs: VecDeque<String>,
     last_sample: Option<Instant>,
+    graph: crate::plot::Graph,
 }
 
 impl App {
@@ -91,6 +92,7 @@ impl App {
             paused: false,
             logs: VecDeque::new(),
             last_sample: None,
+            graph: crate::plot::Graph::default(),
         }
     }
 
@@ -114,6 +116,7 @@ impl App {
                     self.connecting = status == "Connecting…";
                     self.status = status;
                     if !connected {
+                        self.graph.gap();
                         self.declared.clear();
                         self.watched.clear();
                         self.edit = None;
@@ -124,8 +127,13 @@ impl App {
                     watched,
                     error,
                 } => {
+                    self.graph
+                        .sample(&self.saved.plot, &declared, &watched, self.saved.poll_ms);
                     self.declared = declared;
-                    self.watched = watched;
+                    self.watched = watched
+                        .into_iter()
+                        .filter(|(path, _)| self.saved.watches.contains(path))
+                        .collect();
                     self.read_error = error;
                     self.last_sample = Some(Instant::now());
                     self.pending_confirm.clear();
@@ -135,7 +143,7 @@ impl App {
                     items,
                     error,
                 } => {
-                    if query == self.add {
+                    if query == self.add && !self.add.trim().is_empty() {
                         self.suggestions = items;
                         self.suggestion_error = error;
                         self.selected_suggestion = self
@@ -206,6 +214,7 @@ impl App {
                         self.send(Work::Control("resume"));
                     }
                     if ui.toggle_value(&mut self.paused, "Pause polling").changed() {
+                        self.graph.gap();
                         self.send(Work::Polling(self.paused));
                     }
                 } else {
@@ -238,6 +247,9 @@ impl App {
                         self.configure();
                     }
                     ui.label(RichText::new("Poll").weak());
+                    if !self.saved.plot.open && ui.button("Show plot").clicked() {
+                        self.saved.plot.open = true;
+                    }
                 });
             });
             ui.add_space(6.0);
@@ -334,7 +346,8 @@ impl App {
                 self.suggestions.clear();
                 self.suggestion_error = None;
                 self.selected_suggestion = 0;
-                self.suggestion_due = Some(Instant::now() + Duration::from_millis(180));
+                self.suggestion_due = (!self.add.trim().is_empty())
+                    .then(|| Instant::now() + Duration::from_millis(180));
             }
             if response.has_focus() {
                 if ui.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
@@ -346,6 +359,7 @@ impl App {
                 }
                 if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     self.suggestions.clear();
+                    self.suggestion_due = None;
                     if self.replacing.take().is_some() {
                         self.add.clear();
                     }
@@ -485,11 +499,14 @@ impl App {
                     |ui| {
                         ui.add(
                             egui::Label::new(RichText::new(tail(name, max_chars)).monospace())
-                                .sense(egui::Sense::click()),
+                                .sense(egui::Sense::click_and_drag()),
                         )
                     },
                 )
                 .inner;
+            if crate::plot::number(value).is_some() {
+                label.dnd_set_drag_payload(crate::plot::DraggedValue(value.path.clone()));
+            }
             context_response = Some(label.clone());
             if label.clicked() {
                 self.selected = Some(value.path.clone());
@@ -595,6 +612,11 @@ impl App {
         });
         if let Some(response) = context_response {
             response.context_menu(|ui| {
+                if crate::plot::number(value).is_some() && ui.button("Add to plot").clicked() {
+                    self.saved.plot.add(&value.path);
+                    self.configure();
+                    ui.close();
+                }
                 if ui
                     .add_enabled(
                         value.writable && !locked && self.connected,
@@ -678,6 +700,48 @@ impl App {
             }
         }
     }
+    fn watch(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.heading("Live Watch");
+        });
+        if let Some(message) = self.notice.clone() {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(message).color(Color32::from_rgb(224, 170, 117)));
+                if ui.small_button("×").clicked() {
+                    self.notice = None;
+                }
+            });
+        }
+        if let Some(error) = &self.read_error {
+            ui.weak(error);
+        }
+        self.add_watch(ui);
+        ui.separator();
+        egui::ScrollArea::both()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.set_min_width((ui.available_width() - 10.0).max(200.0));
+                if self.declared.is_empty() && self.watched.is_empty() {
+                    ui.add_space(25.0);
+                    ui.weak(if self.connected {
+                        "No declared values. Add a symbol or task path above."
+                    } else {
+                        "Choose the probe and firmware ELF, then connect."
+                    });
+                }
+                for value in self.declared.clone() {
+                    self.row(ui, &value, 0, None);
+                }
+                if !self.declared.is_empty() && !self.watched.is_empty() {
+                    ui.separator();
+                }
+                for (root, values) in self.watched.clone() {
+                    for value in values {
+                        self.row(ui, &value, 0, Some(&root));
+                    }
+                }
+            });
+    }
 }
 
 impl eframe::App for App {
@@ -733,48 +797,25 @@ impl eframe::App for App {
                     });
             });
         });
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading("Live Watch");
+        if self.saved.plot.open {
+            egui::SidePanel::left("live-watch-panel")
+                .default_width(420.0)
+                .width_range(250.0..=750.0)
+                .resizable(true)
+                .show(ctx, |ui| self.watch(ui));
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let mut available = std::collections::BTreeMap::new();
+                crate::plot::numeric_values(&self.declared, &mut available);
+                for (_, values) in &self.watched {
+                    crate::plot::numeric_values(values, &mut available);
+                }
+                if self.graph.show(ui, &mut self.saved.plot, &available) {
+                    self.configure();
+                }
             });
-            if let Some(message) = self.notice.clone() {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(message).color(Color32::from_rgb(224, 170, 117)));
-                    if ui.small_button("×").clicked() {
-                        self.notice = None;
-                    }
-                });
-            }
-            if let Some(error) = &self.read_error {
-                ui.weak(error);
-            }
-            self.add_watch(ui);
-            ui.separator();
-            egui::ScrollArea::both()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.set_min_width((ui.available_width() - 10.0).max(500.0));
-                    if self.declared.is_empty() && self.watched.is_empty() {
-                        ui.add_space(25.0);
-                        ui.weak(if self.connected {
-                            "No declared values. Add a symbol or task path above."
-                        } else {
-                            "Choose the probe and firmware ELF, then connect."
-                        });
-                    }
-                    for value in self.declared.clone() {
-                        self.row(ui, &value, 0, None);
-                    }
-                    if !self.declared.is_empty() && !self.watched.is_empty() {
-                        ui.separator();
-                    }
-                    for (root, values) in self.watched.clone() {
-                        for value in values {
-                            self.row(ui, &value, 0, Some(&root));
-                        }
-                    }
-                });
-        });
+        } else {
+            egui::CentralPanel::default().show(ctx, |ui| self.watch(ui));
+        }
         if let Some(value) = self.reason.clone() {
             let mut open = true;
             egui::Window::new("Watch details").id(egui::Id::new("watch-details")).open(&mut open).default_width(460.0).show(ctx, |ui| {
