@@ -271,44 +271,58 @@ through the firmware request protocol.
 
 ## Flash persistence
 
-Opt in with a stable key. Parameters without a key stay transient:
+Opt in to short-term tuning snapshots with a flag:
 
 ```rust
 use tuning_studio_api::{params, InvalidParamValue};
 params! {
-    static KP: f32 = 0.02, range = 0.0..=1.0, persist = "drive.kp";
+    static KP: f32 = 0.02, range = 0.0..=1.0, persist = true;
 }
 fn restore_at_boot(saved_gain: f32) -> Result<(), InvalidParamValue> {
     KP.restore(saved_gain)?;
     Ok(())
 }
-// Your flash store saves KP.last() under KP.persistence_key().unwrap().
+// Your flash store saves KP.last() under KP.persistence_id().unwrap().
 ```
 
-`persist` is metadata, not a flash operation. The CLI shows the key in parameter
-reads and returns `persistence_key` in `inspect` JSON. Keys must be nonempty and
-unique within your store. Keep a key unchanged when renaming its Rust symbol.
-Choose a new key or migrate the record when changing a parameter's type or meaning.
+No storage names are required. `params!` hashes the module, variable name, type,
+and declaration tokens. The ID also includes the actual default and range bits,
+so a constant's value changing invalidates its record. IDs stay independent of
+RAM addresses; linker movement does not redirect an old value into another
+parameter. Renaming a parameter or changing its declaration may invalidate the
+saved value. This is intended for tuning, not long-lived configuration migration.
 
-The firmware loads records at boot and calls `restore`. Restored values use the
-current range; NaNs are rejected without changing the value. A pending host edit
-is left queued and still applies on the next `get`. Restoring does not change the
-compiled default. Save `last()` after edits settle, on an explicit save action or
-with debouncing. A record read from `last()` can become stale while an asynchronous
-save runs; the application must track later changes if it displays a saved status.
+The 64-bit hash is not cryptographic or collision-free. Validate that enabled
+parameters have distinct IDs before saving. Store an ID-format/schema version
+and scalar type with each snapshot, and reject incompatible records. Treat a
+missing ID as the compiled default. Never recover records by position alone.
+Plain `Param::new` declarations use the constructor's file, line, and column
+instead of macro tokens, plus the scalar type, default, and range. Helper
+constructors can repeat the same identity; prefer `params!` for stored parameters.
 
-Use your board's flash driver or a key-value store for encoding, schema versions,
-checksums, power-loss recovery, and wear management. Save only the parameter
-value and key, never the in-memory `Param` struct or its request counters. No
-flash work happens inside `get`, a critical section, or an interrupt handler.
+`persist = true` is metadata, not a flash operation. The CLI shows the generated
+ID in reads and returns it as a 16-digit hexadecimal `persistence_id` string in
+`inspect` JSON, preserving all 64 bits in JavaScript. Firmware obtains the same
+ID through `persistence_id()`. Parameters without the flag stay transient.
+
+Load records at boot and call `restore`. Restored values use the current range;
+NaNs are rejected without changing the value. Pending host edits remain queued
+for the next `get`. Restore does not change the compiled default. Save `last()`
+on an explicit save action or after debouncing edits. Track edits that arrive
+while an asynchronous save runs before displaying a saved status.
+
+Use the board's flash driver or a key-value store for encoding, checksums,
+power-loss recovery, and wear management. Save parameter values and generated
+IDs, never the in-memory `Param` struct or its request counters. No flash work
+happens inside `get`, a critical section, or an interrupt handler.
 
 The API no longer ramps edits over successive `get` calls. Remove `max_step`
-from older declarations. Keep slew limiting in the control code where it can use
+from older declarations. Keep slew limiting in control code where it can use
 elapsed time rather than the number of reads. Update the CLI with the firmware;
 the current CLI also reads older parameter layouts.
 
 ## Not yet
 
-- A built-in flash driver or a host Save to Flash command. Persistence keys and
+- A built-in flash driver or a host Save to Flash command. Generated IDs and
   firmware restore hooks are available; the application owns storage.
 - The same requests over USB serial, for builds without a probe attached.

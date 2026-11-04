@@ -7,6 +7,27 @@ use gimli::{AttributeValue, DebuggingInformationEntry, Unit};
 /// Step limit for location expressions, so a looping `DW_OP_skip` cannot hang the parser.
 const MAX_EXPR_ITERATIONS: u32 = 10_000;
 
+// A split variable can use the ordinary memory reader only when its pieces
+// form one contiguous byte range in logical order. Never substitute address 0
+// or treat the first piece as the whole variable when reconstruction is needed.
+fn contiguous_address<R: gimli::Reader>(pieces: &[gimli::Piece<R>]) -> Option<u64> {
+    let gimli::Location::Address { address: base } = pieces.first()?.location else {
+        return None;
+    };
+    let mut end = base;
+    for piece in pieces {
+        let gimli::Location::Address { address } = piece.location else {
+            return None;
+        };
+        let bits = piece.size_in_bits?;
+        if address != end || piece.bit_offset.unwrap_or(0) != 0 || bits == 0 || bits % 8 != 0 {
+            return None;
+        }
+        end = end.checked_add(bits / 8)?;
+    }
+    Some(base)
+}
+
 impl<'a> DwarfParser<'a, Reader<'a>> {
     /// Get detailed variable status including why a variable can or cannot be read.
     ///
@@ -198,6 +219,13 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
 
                     // Multi-piece: variable split across locations (DW_OP_piece/DW_OP_bit_piece)
                     if pieces.len() > 1 {
+                        if let Some(address) = contiguous_address(&pieces) {
+                            return if address == 0 {
+                                VariableStatus::AddressZero
+                            } else {
+                                VariableStatus::Valid { address }
+                            };
+                        }
                         let has_address = pieces
                             .iter()
                             .any(|p| matches!(p.location, gimli::Location::Address { .. }));
@@ -360,13 +388,7 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
                             return Some(address);
                         }
                     }
-                    // For multi-piece or non-address locations, try to get address from first piece
-                    for piece in pieces {
-                        if let gimli::Location::Address { address } = piece.location {
-                            return Some(address);
-                        }
-                    }
-                    return None;
+                    return contiguous_address(&pieces);
                 }
 
                 // Needs an address from .debug_addr section (DW_OP_addrx, DW_OP_GNU_addr_index)
@@ -407,5 +429,39 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gimli::{EndianSlice, LittleEndian, Location, Piece};
+
+    #[test]
+    fn split_memory_requires_byte_alignment_contiguity_and_address_only_pieces() {
+        fn memory(address: u64, bytes: u64) -> Piece<EndianSlice<'static, LittleEndian>> {
+            Piece {
+                location: Location::Address { address },
+                size_in_bits: Some(bytes * 8),
+                bit_offset: None,
+            }
+        }
+        assert_eq!(
+            contiguous_address(&[memory(0x2000, 8), memory(0x2008, 4)]),
+            Some(0x2000)
+        );
+        assert_eq!(
+            contiguous_address(&[memory(0x2000, 8), memory(0x3000, 4)]),
+            None
+        );
+        let mut register = memory(0x2008, 4);
+        register.location = Location::Register {
+            register: gimli::Register(0),
+        };
+        assert_eq!(contiguous_address(&[memory(0x2000, 8), register]), None);
+        let mut bitfield = memory(0x2008, 4);
+        bitfield.bit_offset = Some(1);
+        assert_eq!(contiguous_address(&[memory(0x2000, 8), bitfield]), None);
+        assert_eq!(contiguous_address(&[memory(u64::MAX - 1, 4)]), None);
     }
 }

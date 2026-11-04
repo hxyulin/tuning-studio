@@ -21,7 +21,7 @@ embassy = ["dep:embassy-executor"]
 [dependencies]
 critical-section = "1.2"
 embassy-executor = { version = "0.10", default-features = false, features = ["trace"], optional = true }
-tuning-studio-api-macros = { path = "../tuning-studio-api-macros", optional = true }
+tuning-studio-api-macros = { version = "=0.2.0-rc.1", path = "../tuning-studio-api-macros", optional = true }
 
 [dev-dependencies]
 critical-section = { version = "1.2", features = ["std"] }

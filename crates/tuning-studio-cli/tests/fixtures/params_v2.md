@@ -1,7 +1,7 @@
 # Parameter fixture
 
 `params_v2.elf` uses the current API layout without `target` or `max_step`.
-It includes a persistent `tune_lab::KP` with key `motor.kp`.
+It includes a persistent `tune_lab::KP` with an automatically generated schema ID.
 The older `tune_lab.elf` remains for backward compatibility tests.
 
 Regenerate from the repository root:

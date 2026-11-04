@@ -37,9 +37,7 @@ impl VariableStatus {
     pub fn is_readable(&self) -> bool {
         matches!(
             self,
-            VariableStatus::Valid { .. }
-                | VariableStatus::AddressZero
-                | VariableStatus::MultiPiece { has_address: true }
+            VariableStatus::Valid { .. } | VariableStatus::AddressZero
         )
     }
 
@@ -48,11 +46,6 @@ impl VariableStatus {
         match self {
             VariableStatus::Valid { address } => Some(*address),
             VariableStatus::AddressZero => Some(0),
-            VariableStatus::MultiPiece { has_address: true } => {
-                // For multi-piece with address, we return address 0 as placeholder
-                // The actual address handling happens during evaluation
-                Some(0)
-            }
             _ => None,
         }
     }
@@ -74,7 +67,7 @@ impl VariableStatus {
             VariableStatus::ImplicitValue => "Implicit value (computed, no storage)",
             VariableStatus::ImplicitPointer => "Implicit pointer (points to optimized-out data)",
             VariableStatus::MultiPiece { has_address: true } => {
-                "Split across locations (partial address)"
+                "Split across noncontiguous locations (reconstruction not supported)"
             }
             VariableStatus::MultiPiece { has_address: false } => {
                 "Split across registers/implicit values"

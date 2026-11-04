@@ -1,21 +1,20 @@
 # Tuning Studio for VS Code
 
-Run firmware, watch and set its values, sample its Embassy tasks, and plot
+Watch and set firmware values, sample Embassy tasks, and plot
 numbers live. The extension drives the `tuning-studio` CLI and never opens the
 probe itself.
 
 | View | Where | What it shows |
 | --- | --- | --- |
-| Session | Tuning Studio sidebar | Session state, probe, and how Run starts firmware |
+| Session | Tuning Studio sidebar | Connection state, probe, and offline suggestions ELF |
 | Live Watch | Tuning Studio sidebar | Declared `Param`, `watch_mut!` and `watch!` values, plus locations you add |
 | Tasks | Tuning Studio sidebar | The last `tuning-studio tasks` sample |
 | Plot | Tuning Studio panel | Plots with multiple values over host time |
 
-The status bar item runs firmware when no session is running, and shows the
-core state when one is.
+The status bar shows the core state and opens the Session view.
 
 See the [control training template integration](examples/control-training-template.md)
-for the runner, firmware macros, and Fleet build task setup.
+for the runner, firmware macros, and Fleet setup.
 
 ## Requirements
 
@@ -23,77 +22,37 @@ for the runner, firmware macros, and Fleet build task setup.
   `tuningStudio.executable`.
 - macOS or Linux. Sessions use Unix sockets, so the extension reports Windows
   as unsupported.
-- No probe-rs debug session at the same time. Run refuses to start while one
-  is active, and warns when one starts during a session.
+- A running `tuning-studio run` or `attach` session. Stop probe-rs debugging
+  before starting that session; shared access is not implemented yet.
 
-## Run
+## Connect to a tuning session
 
-Run builds the firmware, flashes it with `tuning-studio run`, and waits until
-`tuning-studio status` reaches the new session. Live Watch starts polling only
-after that. Run uses one of two modes, chosen by `tuningStudio.runMode`:
+Build and start firmware from your terminal or existing project tooling:
 
-| Mode | Command | Chosen by `auto` when |
-| --- | --- | --- |
-| `cargo` | `cargo run`, with `CARGO_TARGET_<TRIPLE>_RUNNER="tuning-studio run --chip <chip>"` | No ELF is known |
-| `task` | The build task, then `tuning-studio run --chip <chip> <elf>` | An ELF is known from settings or launch.json |
+```sh
+# Flash, reset, and stream logs.
+tuning-studio run --chip STM32H723VGTx path/to/firmware.elf
 
-Both run as VS Code tasks in a dedicated terminal, which prints the RTT and
-defmt logs. `cargo` mode uses the `$rustc` problem matcher, so build errors
-reach the Problems view. The runner override replaces any runner in
-`.cargo/config.toml`, such as `probe-rs run`, for this run only.
-
-Cargo configuration is read from Cargo home and from the workspace folder's
-ancestors, with nearer files taking precedence. The legacy `.cargo/config`
-filename wins over `config.toml` when both exist. Arrays merge as Cargo arrays do.
-`CARGO_BUILD_TARGET` and target runner environment variables override file values.
-The Session tooltips show the configuration file that supplied each value.
-
-Each input comes from the first source that has it:
-
-| Input | Settings | launch.json | Cargo |
-| --- | --- | --- | --- |
-| Chip | `tuningStudio.chip` | `chip` | `--chip` in `target.<triple>.runner` |
-| ELF | `tuningStudio.elf` | `coreConfigs[0].programBinary` | |
-| Build task | `tuningStudio.buildTask` | `preLaunchTask` | |
-| Target triple | `tuningStudio.cargoTarget` | | `build.target` |
-
-The launch.json configuration is the `probe-rs-debug` one named in
-`tuningStudio.launchConfiguration`, or else the first `launch` request.
-`programBinary` may use `${workspaceFolder}`, `${workspaceFolderBasename}` and
-`${env:NAME}`; any other variable is reported instead of guessed. The Session
-view shows each resolved input, and its tooltip names the source.
-
-### A simple Cargo project
-
-`.cargo/config.toml` with `build.target` and a runner that passes `--chip` is
-enough, as in the [tune lab](../../firmware/tune-lab) or a project whose runner
-is `probe-rs run --chip STM32H723VGTx`. Add `"tuningStudio.cargoArgs":
-["--release"]` for release builds.
-
-### A workspace with its own build tool
-
-For a project like Fleet, where `cargo xtask build` writes the ELF and
-launch.json names it, set the build task:
-
-```jsonc
-// .vscode/settings.json
-{
-  "tuningStudio.buildTask": "xtask: build",
-  "tuningStudio.launchConfiguration": "Launch bringup-dm-mc02 (release)"
-}
+# Or attach to firmware already running, without flashing.
+tuning-studio attach --chip STM32H723VGTx path/to/firmware.elf
 ```
 
-Without a build task, Run flashes the ELF already on disk, and the Session view
-says so. A configured build task must report exit code zero before flashing.
-Use a process or shell task rather than a task consisting only of dependencies.
+Use your board's chip and ELF. Leave the terminal running and open Tuning Studio.
+Live Watch discovers the session automatically. Use Ctrl+C in that terminal to
+end it. The extension does not build, flash, start, stop, or restart firmware.
+Existing VS Code build tasks and debugger controls remain independent.
 
-### Stop
+For offline autocomplete, set `tuningStudio.elf`, or let the extension read
+`coreConfigs[0].programBinary` from a probe-rs configuration in `.vscode/launch.json`.
+`tuningStudio.launchConfiguration` selects its name; empty selects the first
+`launch` configuration. Only the ELF is imported. No build tasks are executed.
+Supported path variables are `${workspaceFolder}`, `${workspaceFolderBasename}`,
+and `${env:NAME}`. Other variables produce an error; set `tuningStudio.elf`
+explicitly in that case.
 
-Stop ends only the build or session that Run started. A session started in another
-terminal shows as `external`; stop it there. Stop first requests normal detach.
-If Run stays alive, it sends Ctrl+C to the owned task's terminal or SIGINT to its
-process, then terminates the task if needed. Stop waits for the task to exit;
-a new Run waits for Stop to finish.
+Run/Stop commands and the `runMode`, `chip`, `buildTask`, `cargoTarget`, and
+`cargoArgs` extension settings have been removed. Existing values for these
+settings can be deleted. The CLI's standalone commands still work.
 
 ## Probe
 
@@ -107,7 +66,7 @@ list` and marks the ones that have a session.
 ## Live Watch
 
 Watch suggestions require a CLI built from the same checkout as the extension.
-After rebuilding the CLI, restart any existing Run or attach session so it can
+After rebuilding the CLI, restart any existing run or attach session so it can
 serve new commands. An older session falls back to suggestions from the selected
 ELF. Pointer and active task-state suggestions still need a current live session.
 Check `tuningStudio.executable` if the dropdown asks for a CLI update. Failed
@@ -157,7 +116,7 @@ full value and the reason it is read-only or failed.
   to explore a path. Up/Down selects a suggestion; Enter or Tab accepts it, and
   Enter again adds the watch. Escape dismisses suggestions without clearing your
   input. Manual symbol paths and `address:type` entries still work. Suggestions
-  use the running session, or the selected ELF's static metadata before Run.
+  use the running session, or the selected ELF's static metadata before connecting.
   Live pointers and active task-state paths need a running session.
 - Choose **Lock Value** or **Unlock Value** from a row's context menu to control
   editing. Locks persist per workspace and gray the value. Supported values,
@@ -265,10 +224,8 @@ The plot has no demo data. Without a session it stays empty.
 | --- | --- | --- |
 | `tuningStudio.executable` | `tuning-studio` | Command name or absolute path |
 | `tuningStudio.probe` | empty | `VID:PID` or `VID:PID:SERIAL` |
-| `tuningStudio.runMode` | `auto` | `auto`, `cargo` or `task` |
 | `tuningStudio.launchConfiguration` | empty | probe-rs launch configuration name |
-| `tuningStudio.chip`, `.elf`, `.buildTask`, `.cargoTarget` | empty | Override the imported values |
-| `tuningStudio.cargoArgs` | `[]` | Extra `cargo run` arguments |
+| `tuningStudio.elf` | empty | ELF for offline suggestions, overriding launch.json |
 | `tuningStudio.pollInterval` | 200 | ms between polls |
 | `tuningStudio.tasksDuration` | 200 | ms per tasks sample |
 | `tuningStudio.plotWindow` | 30 | Seconds shown |
@@ -277,19 +234,16 @@ The plot has no demo data. Without a session it stays empty.
 ## Limitations
 
 - Only the first workspace folder is used.
-- Cargo discovery reads target and runner keys. It does not evaluate `cfg(...)`
-  runner conditions, config `include`, or `--config` overrides in `cargoArgs`.
-- Cargo splits a runner from the environment on whitespace, so `cargo` mode
-  refuses an executable path or probe selector with spaces. Use `task` mode.
 - A location the CLI reports under a different path is matched by position, and
   only when the call returned one value per location.
 - `inspect`'s optional `tasks` field is ignored; Tasks uses `tuning-studio tasks`.
 
-## Hardware validation
+## Earlier hardware validation
 
 On 2026-11-02, the extension ran in the VS Code Extension Development Host on
 macOS with a Horco CMSIS-DAP probe and an STM32H723 board. Run built and flashed
-both `tune-lab` and `select-lab` from their Cargo configuration.
+both `tune-lab` and `select-lab` from their Cargo configuration. Those Run
+controls have since been removed; these results describe the earlier extension.
 
 Live Watch discovered the API declarations. Set Value changed the simulated
 motor's setpoint from 100 to 180 rad/s, and Plot showed its response. With KI
@@ -316,6 +270,6 @@ Debug. It compiles the extension and opens [`firmware/tune-lab`](../../firmware/
 in an Extension Development Host. `npm run package` builds a `.vsix` with
 `@vscode/vsce`.
 
-The tests cover the configuration and parser modules (`jsonc`, `cargoConfig`,
-`launchConfig`, `runPlan`, `cliText`, `inspect`, `tasksOutput`, `series`,
+The tests cover the configuration and parser modules (`jsonc`,
+`launchConfig`, `cliText`, `inspect`, `tasksOutput`, `series`,
 `messages`), which do not import `vscode`.

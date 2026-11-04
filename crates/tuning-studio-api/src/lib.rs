@@ -198,7 +198,7 @@ pub mod reply {
 /// tuning_studio_api::params! {
 ///     /// Target speed
 ///     pub static SETPOINT: f32 = 100.0, range = -300.0..=300.0, unit = "rad/s";
-///     static KP: f32 = 0.02, range = 0.0..=1.0, persist = "drive.kp";
+///     static KP: f32 = 0.02, range = 0.0..=1.0, persist = true;
 ///     static ENABLE: bool = true;
 /// }
 /// ```
@@ -210,7 +210,9 @@ macro_rules! params {
     )*) => {$(
         $(#[$attr])*
         #[cfg_attr(target_os = "none", unsafe(link_section = ".data.tuning_studio"))]
-        $vis static $name: $crate::Param<$type> = $crate::Param::new($default) $(.$option($value))*;
+        $vis static $name: $crate::Param<$type> = $crate::Param::new($default)
+            .__schema(concat!(module_path!(), "::", stringify!($name), ":", stringify!($type), "=", stringify!($default), $(",", stringify!($option), "=", stringify!($value),)*))
+            $(.$option($value))*;
     )*};
 }
 
@@ -247,7 +249,8 @@ pub struct Param<T> {
     default: T,
     min: T,
     max: T,
-    persist: &'static str,
+    persist: bool,
+    schema: u64,
     unit: &'static str,
 }
 
@@ -269,6 +272,7 @@ impl core::error::Error for InvalidParamValue {}
 impl<T: Value> Param<T> {
     /// A parameter that starts at `default`, with no range limit.
     #[must_use]
+    #[track_caller]
     pub const fn new(default: T) -> Self {
         Self {
             value: UnsafeCell::new(default),
@@ -279,7 +283,8 @@ impl<T: Value> Param<T> {
             default,
             min: T::MIN,
             max: T::MAX,
-            persist: "",
+            persist: false,
+            schema: caller_schema(core::panic::Location::caller()),
             unit: "",
         }
     }
@@ -293,34 +298,48 @@ impl<T: Value> Param<T> {
         self
     }
 
-    /// Mark this parameter for firmware-managed flash storage under a stable key.
-    ///
-    /// Keys must be unique within the application's parameter store. Keep them
-    /// unchanged across symbol renames. This hint does not perform flash I/O.
-    ///
-    /// # Panics
-    /// Panics if `key` is empty.
+    /// Opt in to short-term firmware-managed flash storage. No flash I/O occurs here.
+    /// `params!` generates the identity from its declaration. Changes to the
+    /// declaration, type, default, or range invalidate the previous ID.
     #[must_use]
-    pub const fn persist(mut self, key: &'static str) -> Self {
-        assert!(!key.is_empty(), "persistence key must not be empty");
-        self.persist = key;
+    pub const fn persist(mut self, enabled: bool) -> Self {
+        self.persist = enabled;
         self
     }
 
-    /// The stable storage key, or `None` for a parameter kept only in RAM.
-    pub const fn persistence_key(&self) -> Option<&'static str> {
-        if self.persist.is_empty() {
-            None
-        } else {
-            Some(self.persist)
-        }
+    /// An automatic storage ID, or `None` for a parameter kept only in RAM.
+    ///
+    /// This ID is for tuning snapshots, not a permanent configuration key.
+    /// `params!` declarations use their module, name, and declaration tokens.
+    /// Plain `Param::new` declarations use their constructor's source location.
+    /// Both include the scalar type, default, and range. Moving or editing code
+    /// may invalidate records. Stores must reject duplicate IDs and include a
+    /// schema/version header; the hash is not a cryptographic identity.
+    pub fn persistence_id(&self) -> Option<u64> {
+        self.persist.then(|| {
+            parameter_id(
+                self.schema,
+                T::STORAGE_TYPE,
+                self.default.bits(),
+                self.min.bits(),
+                self.max.bits(),
+            )
+        })
+    }
+
+    /// Implementation detail used by `params!` to distinguish declarations.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn __schema(mut self, declaration: &str) -> Self {
+        self.schema = hash_bytes(0xcbf29ce484222325, declaration.as_bytes());
+        self
     }
 
     /// Restore a value loaded by the firmware's flash backend, clamped to the range.
     ///
     /// Load at boot before accepting host edits. Restoring does not acknowledge
     /// or discard a pending host request; the next `get` still applies it.
-    /// For saving, write `last()` under `persistence_key()` after edits settle.
+    /// For saving, write `last()` under `persistence_id()` after edits settle.
     /// Flash encoding, schema migration, wear, and save scheduling belong to
     /// the application. This method performs no flash I/O.
     ///
@@ -392,11 +411,41 @@ fn escape<T>(value: &T) -> &T {
     core::hint::black_box(value)
 }
 
+// FNV-1a provides a deterministic, non-cryptographic ID without allocation.
+const fn hash_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
+    let mut i = 0;
+    while i < bytes.len() {
+        hash = (hash ^ bytes[i] as u64).wrapping_mul(0x100000001b3);
+        i += 1;
+    }
+    hash
+}
+
+const fn caller_schema(location: &core::panic::Location<'_>) -> u64 {
+    let hash = hash_bytes(0xcbf29ce484222325, location.file().as_bytes());
+    let hash = hash_bytes(hash, &location.line().to_le_bytes());
+    hash_bytes(hash, &location.column().to_le_bytes())
+}
+
+/// Shared firmware/host implementation detail for generated parameter IDs.
+#[doc(hidden)]
+pub const fn parameter_id(schema: u64, scalar: u8, default: u32, min: u32, max: u32) -> u64 {
+    let hash = hash_bytes(schema, b"tuning-studio-param-v1");
+    let hash = hash_bytes(hash, &[scalar]);
+    let hash = hash_bytes(hash, &default.to_le_bytes());
+    let hash = hash_bytes(hash, &min.to_le_bytes());
+    hash_bytes(hash, &max.to_le_bytes())
+}
+
 /// The types a [`Param`] or [`WatchMut`] can hold: at most 32 bits, so the host reads them
 /// whole.
 pub trait Value: Copy + PartialOrd + sealed::Sealed {
     #[doc(hidden)]
     const MIN: Self;
+    #[doc(hidden)]
+    const STORAGE_TYPE: u8;
+    #[doc(hidden)]
+    fn bits(self) -> u32;
     #[doc(hidden)]
     const MAX: Self;
     #[doc(hidden)]
@@ -420,10 +469,12 @@ fn limit<T: PartialOrd>(request: T, min: T, max: T) -> (T, u8) {
 }
 
 macro_rules! integer {
-    ($($type:ty),*) => {$(
+    ($(($type:ty, $tag:expr)),*) => {$(
         impl sealed::Sealed for $type {}
         impl Value for $type {
             const MIN: Self = <$type>::MIN;
+            const STORAGE_TYPE: u8 = $tag;
+            fn bits(self) -> u32 { (self as u32) & (u32::MAX >> (32 - core::mem::size_of::<Self>() * 8)) }
             const MAX: Self = <$type>::MAX;
             fn from_request(bits: u32) -> Option<Self> {
                 // The host zero-extends the value's bytes, so truncating recovers them.
@@ -437,11 +488,15 @@ macro_rules! integer {
     )*};
 }
 
-integer!(i8, i16, i32, u8, u16, u32);
+integer!((i8, 1), (i16, 2), (i32, 3), (u8, 4), (u16, 5), (u32, 6));
 
 impl sealed::Sealed for f32 {}
 impl Value for f32 {
     const MIN: Self = f32::NEG_INFINITY;
+    const STORAGE_TYPE: u8 = 7;
+    fn bits(self) -> u32 {
+        self.to_bits()
+    }
     const MAX: Self = f32::INFINITY;
     fn from_request(bits: u32) -> Option<Self> {
         Some(f32::from_bits(bits)).filter(|value| !value.is_nan())
@@ -454,6 +509,10 @@ impl Value for f32 {
 impl sealed::Sealed for bool {}
 impl Value for bool {
     const MIN: Self = false;
+    const STORAGE_TYPE: u8 = 8;
+    fn bits(self) -> u32 {
+        u32::from(self)
+    }
     const MAX: Self = true;
     fn from_request(bits: u32) -> Option<Self> {
         match bits {
@@ -534,9 +593,9 @@ mod tests {
 
     #[test]
     fn persistence_is_explicit_and_restore_keeps_pending_host_edits() {
-        let kp = Param::new(1.0f32).range(0.0..=10.0).persist("drive.kp");
-        assert_eq!(kp.persistence_key(), Some("drive.kp"));
-        assert_eq!(Param::new(0u8).persistence_key(), None);
+        let kp = Param::new(1.0f32).range(0.0..=10.0).persist(true);
+        assert!(kp.persistence_id().is_some());
+        assert_eq!(Param::new(0u8).persistence_id(), None);
         assert_eq!(kp.restore(20.0), Ok(10.0));
         assert_eq!(kp.get(), 10.0);
         assert_eq!(kp.restore(f32::NAN), Err(InvalidParamValue));
@@ -547,6 +606,33 @@ mod tests {
         assert_eq!(kp.get(), 3.0);
         assert_eq!(reply(&kp), (id, reply::APPLIED));
         assert_eq!(kp.default_value(), 1.0);
+    }
+
+    #[test]
+    fn generated_ids_follow_the_schema_instead_of_storage_addresses() {
+        let make = || {
+            Param::new(1f32)
+                .__schema("module::KP:f32")
+                .range(0.0..=10.0)
+                .persist(true)
+        };
+        assert_eq!(make().persistence_id(), make().persistence_id());
+        let original = make().persistence_id();
+        assert_ne!(original, make().range(0.0..=20.0).persistence_id());
+        assert_ne!(
+            original,
+            Param::new(2f32)
+                .__schema("module::KP:f32")
+                .range(0.0..=10.0)
+                .persist(true)
+                .persistence_id()
+        );
+        assert_ne!(original, make().__schema("module::KI:f32").persistence_id());
+        assert_eq!(make().persist(false).persistence_id(), None);
+        params! { static FIRST: i8 = -1, persist = true; static SECOND: i8 = -1, persist = true; }
+        assert_ne!(FIRST.persistence_id(), SECOND.persistence_id());
+        assert_eq!((-1i8).bits(), 255);
+        assert_eq!((-1i16).bits(), 65535);
     }
 
     struct Driver;

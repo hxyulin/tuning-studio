@@ -1,5 +1,4 @@
 import * as vscode from 'vscode';
-import { PlanSettings, RunMode } from './runPlan';
 
 const SECTION = 'tuningStudio';
 
@@ -11,21 +10,12 @@ function clamp(value: number, min: number, max: number, fallback: number): numbe
   return Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
 }
 
-export function planSettings(): PlanSettings {
-  const c = section();
-  const mode = c.get<string>('runMode', 'auto');
-  const args = c.get<unknown>('cargoArgs', []);
-  return {
-    executable: executable(),
-    probe: probe(),
-    runMode: (['auto', 'cargo', 'task'].includes(mode) ? mode : 'auto') as RunMode,
-    launchConfiguration: c.get<string>('launchConfiguration', ''),
-    chip: c.get<string>('chip', ''),
-    elf: c.get<string>('elf', ''),
-    buildTask: c.get<string>('buildTask', ''),
-    cargoTarget: c.get<string>('cargoTarget', ''),
-    cargoArgs: Array.isArray(args) ? args.filter((a): a is string => typeof a === 'string') : [],
-  };
+export function launchConfiguration(): string {
+  return section().get<string>('launchConfiguration', '').trim();
+}
+
+export function elf(): string {
+  return section().get<string>('elf', '').trim();
 }
 
 export function executable(): string {

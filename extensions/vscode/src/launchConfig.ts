@@ -4,7 +4,6 @@ export interface ProbeRsLaunch {
   request: string;
   chip?: string;
   programBinary?: string;
-  preLaunchTask?: string;
 }
 
 /** Every `probe-rs-debug` configuration in a parsed `launch.json`. */
@@ -24,7 +23,6 @@ export function probeRsLaunches(launchJson: unknown): ProbeRsLaunch[] {
       request: typeof entry.request === 'string' ? entry.request : 'launch',
       chip: nonEmpty(entry.chip),
       programBinary: nonEmpty(first.programBinary),
-      preLaunchTask: nonEmpty(entry.preLaunchTask),
     });
   }
   return found;

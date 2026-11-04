@@ -5,7 +5,7 @@ uses STM32H723VGTx, `thumbv7em-none-eabihf`, Embassy executor 0.10, and
 `debug = 2` in both profiles. Its `Pid` is an empty exercise stub. The gain
 examples below assume you have implemented `kp`, `ki`, and `kd` fields.
 
-## Run from VS Code
+## Start a tuning session
 
 Install the CLI from this checkout, which includes the extension's `inspect`
 command:
@@ -20,23 +20,13 @@ Build and install the extension locally:
 cd extensions/vscode
 npm ci
 npm run package
-code --install-extension tuning-studio-0.1.0.vsix
+code --install-extension tuning-studio-0.2.0-rc.1.vsix
 ```
 
-Open your training repository in VS Code. Its existing `.cargo/config.toml`
-already supplies the chip and target triple. Set the release arguments in
-`.vscode/settings.json`:
-
-```json
-{
-  "tuningStudio.cargoArgs": ["--release", "--locked"]
-}
-```
-
-Click Run Firmware in the Tuning Studio sidebar. The extension runs Cargo with
-a runner override, so Cargo gives Tuning Studio the exact ELF it just built.
-The terminal prints RTT logs. Live Watch connects after the session answers.
-You do not need a launch.json or a hardcoded ELF path for this project.
+Build firmware with the training repository's usual Cargo command. In a terminal,
+start `tuning-studio run --chip STM32H723VGTx <firmware.elf>`, then open Tuning
+Studio in VS Code. Live Watch connects to that session. The extension does not
+build or start firmware.
 
 To use the same runner outside the extension, replace the existing runner in
 `.cargo/config.toml`:
@@ -48,9 +38,9 @@ runner = "tuning-studio run --chip STM32H723VGTx"
 ```
 
 Then `cargo run --release --locked` starts a session the extension can also use.
-Stop a session started in another terminal there. Stop Session only terminates
-the VS Code task the extension started. Ending a host session does not send a
-stop command to the motor controller.
+Stop the session with Ctrl+C in its terminal. Ending a host session does not
+send a stop command to the motor controller. Stop probe-rs debugging before
+starting a tuning session; sharing that connection is not implemented yet.
 
 ## Expose the values
 
@@ -117,17 +107,8 @@ want the task to apply an edit through its normal mutable reference.
 
 ## Fleet workspaces
 
-Fleet's `xtask` generates a probe-rs launch configuration with the selected
-board's chip and ELF. The extension imports those values without launching
-probe-rs. Select that configuration and set:
-
-```json
-{
-  "tuningStudio.buildTask": "xtask: build"
-}
-```
-
-Run then executes the build task and starts `tuning-studio run` on its ELF.
-Use a process or shell task that reports a successful exit code. A dependency
-group without a process cannot establish that the build succeeded. Without a
-build task, Run uses the ELF already on disk and says so in the Session view.
+Use Fleet's normal `xtask` build command, then start `tuning-studio run` or
+`attach` with the selected board's chip and generated ELF. The extension can
+read that ELF path from Fleet's generated probe-rs launch configuration for
+offline autocomplete. Set `tuningStudio.launchConfiguration` to select a
+configuration by name. It does not execute `preLaunchTask` or launch the debugger.

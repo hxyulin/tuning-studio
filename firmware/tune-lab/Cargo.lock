@@ -175,7 +175,7 @@ dependencies = [
 
 [[package]]
 name = "tuning-studio-api"
-version = "0.2.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "critical-section",
  "tuning-studio-api-macros",
@@ -183,7 +183,7 @@ dependencies = [
 
 [[package]]
 name = "tuning-studio-api-macros"
-version = "0.2.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -624,8 +624,15 @@ impl ElfParser {
                 continue;
             }
 
-            // Check if we already have this symbol
-            let exists = info.symbols.iter().any(|s| s.address == dwarf_sym.address);
+            // Compiler-generated ELF shards can share the canonical DWARF address.
+            // Preserve the variable name instead of treating an address as identity.
+            let exists = info.symbols.iter().any(|s| {
+                s.address == dwarf_sym.address
+                    && (dwarf_sym.mangled_name.is_none()
+                        || s.display_name == dwarf_sym.name
+                        || s.demangled_name == dwarf_sym.name
+                        || dwarf_sym.mangled_name.as_deref() == Some(s.mangled_name.as_str()))
+            });
             if exists {
                 continue;
             }

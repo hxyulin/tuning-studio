@@ -19,7 +19,7 @@ embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executo
 embassy-futures = "0.1"
 embassy-sync = "0.8"
 libm = "0.2"
-tuning-studio-api = { path = "../../crates/tuning-studio-api" }
+tuning-studio-api = { version = "=0.2.0-rc.1", path = "../../crates/tuning-studio-api" }
 
 [profile.release]
 debug = 2

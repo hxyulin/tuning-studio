@@ -43,9 +43,7 @@ export class WatchTree implements vscode.TreeDataProvider<WatchNode> {
       return state.failure.message;
     }
     if (state.kind !== 'ready') {
-      return state.kind === 'building' || state.kind === 'starting'
-        ? 'Waiting for the session to start'
-        : 'No running session';
+      return 'No running session';
     }
     if (this.watch.paused) {
       return 'Polling paused';

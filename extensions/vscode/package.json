@@ -1,8 +1,8 @@
 {
   "name": "tuning-studio",
   "displayName": "Tuning Studio",
-  "description": "Run firmware, watch and set values, sample Embassy tasks and plot live values through the tuning-studio CLI.",
-  "version": "0.1.0",
+  "description": "Watch and tune firmware values, sample Embassy tasks and plot live values through an existing tuning-studio session.",
+  "version": "0.2.0-rc.1",
   "publisher": "hxyulin",
   "license": "MIT OR Apache-2.0",
   "private": true,
@@ -78,35 +78,7 @@
         "when": "!tuningStudio.tasksSampled"
       }
     ],
-    "taskDefinitions": [
-      {
-        "type": "tuning-studio",
-        "required": [
-          "action"
-        ],
-        "properties": {
-          "action": {
-            "type": "string",
-            "description": "The tuning-studio step this task runs."
-          }
-        }
-      }
-    ],
     "commands": [
-      {
-        "command": "tuningStudio.run",
-        "title": "Run Firmware",
-        "category": "Tuning Studio",
-        "icon": "$(play)",
-        "enablement": "!tuningStudio.busy"
-      },
-      {
-        "command": "tuningStudio.stop",
-        "title": "Stop Session",
-        "category": "Tuning Studio",
-        "icon": "$(debug-stop)",
-        "enablement": "tuningStudio.owned"
-      },
       {
         "command": "tuningStudio.refreshSession",
         "title": "Refresh",
@@ -221,16 +193,6 @@
     ],
     "menus": {
       "view/title": [
-        {
-          "command": "tuningStudio.run",
-          "when": "view == tuningStudio.session && !tuningStudio.owned",
-          "group": "navigation@1"
-        },
-        {
-          "command": "tuningStudio.stop",
-          "when": "view == tuningStudio.session && tuningStudio.owned",
-          "group": "navigation@1"
-        },
         {
           "command": "tuningStudio.refreshSession",
           "when": "view == tuningStudio.session",
@@ -371,53 +333,15 @@
           "default": "",
           "markdownDescription": "Probe as `VID:PID` or `VID:PID:SERIAL`. Passed as `--probe` to every command. Empty picks the only session or probe."
         },
-        "tuningStudio.runMode": {
-          "type": "string",
-          "enum": [
-            "auto",
-            "cargo",
-            "task"
-          ],
-          "enumDescriptions": [
-            "`task` when an ELF is known from settings or launch.json, otherwise `cargo`.",
-            "`cargo run`, with `tuning-studio run` as the Cargo runner for the build target.",
-            "Run the build task, then `tuning-studio run --chip <chip> <elf>`."
-          ],
-          "default": "auto",
-          "markdownDescription": "How **Run Firmware** builds and starts the session."
-        },
         "tuningStudio.launchConfiguration": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Name of a `probe-rs-debug` configuration in `.vscode/launch.json` to take `chip`, `coreConfigs[0].programBinary` and `preLaunchTask` from. Empty uses the first `launch` configuration."
-        },
-        "tuningStudio.chip": {
-          "type": "string",
-          "default": "",
-          "markdownDescription": "probe-rs chip name, such as `STM32H723VGTx`. Overrides launch.json and the Cargo runner's `--chip`."
+          "markdownDescription": "Name of a probe-rs-debug configuration to read coreConfigs[0].programBinary from for offline suggestions. Empty uses the first launch configuration."
         },
         "tuningStudio.elf": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Firmware ELF for `task` mode, relative to the workspace folder. Overrides launch.json's `programBinary`."
-        },
-        "tuningStudio.buildTask": {
-          "type": "string",
-          "default": "",
-          "markdownDescription": "Label of the task that builds the ELF in `task` mode. Overrides launch.json's `preLaunchTask`."
-        },
-        "tuningStudio.cargoTarget": {
-          "type": "string",
-          "default": "",
-          "markdownDescription": "Target triple for `cargo` mode. Empty uses `build.target` from `.cargo/config.toml`."
-        },
-        "tuningStudio.cargoArgs": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "default": [],
-          "markdownDescription": "Extra arguments after `cargo run`, such as `[\"--release\"]`."
+          "markdownDescription": "Firmware ELF for offline watch suggestions, relative to the workspace folder. Overrides launch.json programBinary. Does not start a session."
         },
         "tuningStudio.pollInterval": {
           "type": "number",

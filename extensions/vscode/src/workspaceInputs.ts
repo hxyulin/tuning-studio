@@ -1,71 +1,53 @@
 import * as vscode from 'vscode';
-import { cargoConfigDirectories, discoverCargoConfig } from './cargoConfig';
 import * as path from 'node:path';
-import { homedir } from 'node:os';
 import { parseJsonc } from './jsonc';
-import { probeRsLaunches } from './launchConfig';
-import { PlanInputs, resolveRunPlan, RunPlan } from './runPlan';
-import { planSettings } from './settings';
+import { pickLaunch, probeRsLaunches, ProbeRsLaunch, substituteVariables } from './launchConfig';
+import * as settings from './settings';
+
+export interface TuningInputs {
+  launches: ProbeRsLaunch[];
+  launchError?: string;
+  elf?: string;
+  elfSource?: string;
+}
 
 /** The workspace folder Tuning Studio works in: the first one. */
 export function primaryFolder(): vscode.WorkspaceFolder | undefined {
   return vscode.workspace.workspaceFolders?.[0];
 }
 
-async function readText(uri: vscode.Uri): Promise<string | undefined> {
+/** Read only the ELF metadata needed for offline watch suggestions. Never start a build. */
+export async function readInputs(folder: vscode.WorkspaceFolder): Promise<TuningInputs> {
+  const inputs: TuningInputs = { launches: [] };
+  const uri = vscode.Uri.joinPath(folder.uri, '.vscode', 'launch.json');
   try {
-    return new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
-  } catch {
-    return undefined;
-  }
-}
-
-/** Read launch.json and Cargo configuration inherited by this working directory. */
-export async function readPlanInputs(folder: vscode.WorkspaceFolder): Promise<PlanInputs> {
-  const base = folder.uri;
-  const inputs: PlanInputs = {
-    settings: planSettings(),
-    workspaceFolder: base.fsPath,
-    env: process.env,
-    launches: [],
-    hasCargoToml: (await readText(vscode.Uri.joinPath(base, 'Cargo.toml'))) !== undefined,
-  };
-  const launch = await readText(vscode.Uri.joinPath(base, '.vscode', 'launch.json'));
-  if (launch !== undefined) {
-    try {
-      inputs.launches = probeRsLaunches(parseJsonc(launch));
-    } catch (error) {
+    inputs.launches = probeRsLaunches(parseJsonc(new TextDecoder().decode(await vscode.workspace.fs.readFile(uri))));
+  } catch (error) {
+    if ((error as { code?: string }).code !== 'FileNotFound') {
       inputs.launchError = error instanceof Error ? error.message : String(error);
     }
   }
-  try {
-    inputs.cargo = await discoverCargoConfig(
-      base.fsPath,
-      cargoHome(base.fsPath),
-      async file => {
-        try {
-          return new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.file(file)));
-        } catch (error) {
-          if ((error as { code?: string }).code === 'FileNotFound') return undefined;
-          throw new Error(`Could not read ${file}: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      },
-    );
-  } catch (error) {
-    inputs.cargoError = error instanceof Error ? error.message : String(error);
+  const explicit = settings.elf();
+  if (explicit) {
+    inputs.elf = path.resolve(folder.uri.fsPath, explicit);
+    inputs.elfSource = 'tuningStudio.elf';
+    return inputs;
+  }
+  const picked = pickLaunch(inputs.launches, settings.launchConfiguration());
+  inputs.launchError ??= picked.error;
+  if (picked.launch?.programBinary) {
+    const expanded = substituteVariables(picked.launch.programBinary, {
+      workspaceFolder: folder.uri.fsPath, env: process.env,
+    });
+    if (expanded.value !== undefined) {
+      inputs.elf = path.resolve(folder.uri.fsPath, expanded.value);
+      inputs.elfSource = `launch.json "${picked.launch.name}"`;
+    } else inputs.launchError ??= expanded.error;
   }
   return inputs;
 }
 
-export async function currentPlan(): Promise<RunPlan | undefined> {
+export async function currentInputs(): Promise<TuningInputs | undefined> {
   const folder = primaryFolder();
-  return folder ? resolveRunPlan(await readPlanInputs(folder)) : undefined;
-}
-
-function cargoHome(cwd: string): string {
-  return process.env.CARGO_HOME ? path.resolve(cwd, process.env.CARGO_HOME) : path.join(homedir(), '.cargo');
-}
-
-export function inheritedCargoDirectories(folder: vscode.WorkspaceFolder): string[] {
-  return cargoConfigDirectories(folder.uri.fsPath, cargoHome(folder.uri.fsPath));
+  return folder ? readInputs(folder) : undefined;
 }

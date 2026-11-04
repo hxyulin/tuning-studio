@@ -18,9 +18,15 @@
 Live data from an STM32H723 over SWD. The [plot demo](firmware/select-lab#plot-demo)
 publishes three phase-shifted waves alongside the lab's Embassy tasks.
 
-The [VS Code extension](extensions/vscode) adds Run Firmware, Live Watch,
-Tasks and a numeric plotter. It imports chip, ELF and build settings from Cargo
-or a probe-rs launch configuration. See the
+The [native desktop app](crates/tuning-studio-desktop) provides an egui Live Watch
+with inline edits, expandable fields, autocomplete, and halt/resume controls.
+Build it with `cargo build --locked -p tuning-studio-cli -p tuning-studio-desktop`,
+then run `target/debug/tuning-studio-desktop`. Select the matching firmware ELF
+and connect to a probe. It shares the existing CLI backend and firmware API.
+
+The [VS Code extension](extensions/vscode) adds Live Watch, Embassy task samples,
+and a numeric plotter. It connects to a CLI session started in your terminal
+and can read the ELF path from a probe-rs launch configuration for offline suggestions. See the
 [control training integration](extensions/vscode/examples/control-training-template.md)
 for an example using existing PID fields and `watch_mut!`.
 
@@ -34,7 +40,7 @@ changes itself, within limits it declares.
 
 ```text
 $ tuning-studio values
-tune_lab::KP: f32 = 0.02 (default 0.02, 0.0 to 1.0, flash key motor.kp)
+tune_lab::KP: f32 = 0.02 (default 0.02, 0.0 to 1.0)
 tune_lab::SETPOINT: f32 = 100.0 rad/s (default 100.0, -300.0 to 300.0)
 motor.speed: f32 = 91.16411 rad/s
 motor.state: MotorSnapshot
@@ -76,13 +82,13 @@ cargo install --path crates/tuning-studio-cli --locked
 cd extensions/vscode
 npm ci
 npm run package
-code --install-extension tuning-studio-0.1.0.vsix
+code --install-extension tuning-studio-0.2.0-rc.1.vsix
 ```
 
 The CLI installs as `tuning-studio`. Make sure it is on the `PATH` VS Code
 uses, or set `tuningStudio.executable` to its absolute path. If the `code`
 command is unavailable, use **Extensions: Install from VSIX...** in VS Code
-and select `extensions/vscode/tuning-studio-0.1.0.vsix` from your checkout.
+and select `extensions/vscode/tuning-studio-0.2.0-rc.1.vsix` from your checkout.
 
 ### 2. Expose firmware values
 
@@ -142,43 +148,31 @@ and later firmware code can change it again. It supports `f32`, `bool`, and
 and a separate macro call site for each value you expose.
 
 Call each parameter's `get()` where the control loop can apply a pending edit.
-For flash integration, mark parameters with `persist = "drive.kp"`,
-restore values at boot with `restore`, and save `last()` through your firmware
-store. The API does not perform flash writes.
+For flash integration, mark parameters with `persist = true`,
+restore values at boot with `restore`, and save `last()` under its generated
+`persistence_id()` through your firmware store. IDs are for tuning snapshots;
+parameter declaration changes can invalidate them. The API does not perform flash writes.
 See the [firmware API guide](crates/tuning-studio-api) for struct snapshots,
 editable locals, and optional Embassy trace hooks.
 
-### 3. Run, watch, and tune in VS Code
+### 3. Connect, watch, and tune in VS Code
 
-Open your firmware project in VS Code. For a Cargo project, the extension
-reads the chip and target from `.cargo/config.toml`. For example, on an
-STM32H723:
+Build firmware with your project's normal build command. Start a tuning session
+in a terminal, using your board's chip and ELF:
 
-```toml
-[build]
-target = "thumbv7em-none-eabihf"
-
-[target.thumbv7em-none-eabihf]
-runner = "tuning-studio run --chip STM32H723VGTx"
+```sh
+tuning-studio run --chip STM32H723VGTx path/to/firmware.elf
 ```
 
-Use your board's chip and target triple, install that Rust target, and keep
-your project's existing linker flags. An existing `probe-rs run --chip …`
-runner also works: the extension overrides it for its Run command. For a
-project with a probe-rs `launch.json`, it can import the chip, ELF, and
-`preLaunchTask` instead.
+To attach to firmware already running without flashing, use `tuning-studio attach`
+with the same arguments. Stop any probe-rs debug session first; sharing its probe
+connection is not implemented yet. Leave the terminal running and open
+**Tuning Studio** in VS Code. The extension finds the session automatically.
+Use Ctrl+C in the session's terminal to end it.
 
-To build firmware in release mode, add this to `.vscode/settings.json`:
-
-```json
-{
-  "tuningStudio.cargoArgs": ["--release", "--locked"]
-}
-```
-
-Connect the board and probe, open **Tuning Studio** in the activity bar, and
-click **Run Firmware** in Session. Run builds and flashes the firmware, then
-prints its logs in a terminal. Stop any active probe-rs debug session first.
+The extension focuses on tuning. It does not build, flash, or control the session's
+lifetime. For offline watch suggestions, set `tuningStudio.elf` or select a
+probe-rs launch configuration whose `coreConfigs[0].programBinary` names the ELF.
 
 - **Live Watch** discovers `params!`, `watch!`, and `watch_mut!` values.
   Click a writable value to edit it inline, Enter to submit, or Escape to
@@ -208,9 +202,10 @@ tuning-studio set my_firmware::SETPOINT 120
 tuning-studio tasks --duration 2000
 ```
 
-Run `tuning-studio list` to list probes. For a CLI-only workflow,
-`cargo run --release` uses the runner above to build, flash, and start a
-session. See the [CLI guide](crates/tuning-studio-cli) for all commands.
+Run `tuning-studio list` to list probes. You can also configure
+`tuning-studio run --chip <chip>` as your Cargo runner, then use
+`cargo run --release` to build, flash, and start a session. See the
+[CLI guide](crates/tuning-studio-cli) for all commands.
 
 ## Crates
 

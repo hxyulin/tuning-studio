@@ -1,102 +1,39 @@
 import * as vscode from 'vscode';
-import { randomUUID } from 'node:crypto';
 import { Cli } from './cli';
 import { Failure, statusArgs } from './cliText';
-import { RunCommand } from './runPlan';
 import { probe } from './settings';
 
 export type SessionState =
   | { kind: 'unknown' }
   | { kind: 'none' }
-  | { kind: 'building'; task: string }
-  | { kind: 'starting'; detail: string }
-  | { kind: 'ready'; owned: boolean; status: string }
+  | { kind: 'ready'; status: string }
   | { kind: 'error'; failure: Failure };
 
-const TASK_TYPE = 'tuning-studio';
-const STARTING_CHECK_MS = 500;
 const IDLE_CHECK_MS = 2000;
 
-/**
- * Tracks whether a tuning-studio session serves this probe, and owns the
- * session that Run starts. It never stops a session it did not start.
- */
+/** Observes a CLI session. Building, starting and stopping belong to its terminal. */
 export class SessionController implements vscode.Disposable {
   private stateValue: SessionState = { kind: 'unknown' };
-  private owned?: vscode.TaskExecution;
-  private ownedRole?: 'build' | 'run';
-  private stopRequested = false;
-  private processId?: number;
-  private readonly taskPids = new WeakMap<vscode.TaskExecution, number>();
-  private ended?: Promise<number | undefined>;
-  private owner?: { token: string; probe: string };
-  private stopping?: Promise<void>;
   private checkTimer?: NodeJS.Timeout;
   private inflight?: Promise<SessionState>;
   private monitorWanted = false;
-  private readonly probeRsSessions = new Set<string>();
+  private disposed = false;
   private readonly emitter = new vscode.EventEmitter<SessionState>();
-  private readonly disposables: vscode.Disposable[] = [];
-
   readonly onDidChange = this.emitter.event;
 
-  constructor(
-    private readonly cli: Cli,
-    private readonly log: vscode.OutputChannel,
-  ) {
-    const active = vscode.debug.activeDebugSession;
-    if (active?.type === 'probe-rs-debug') {
-      this.probeRsSessions.add(active.id);
-    }
-    this.disposables.push(
-      this.emitter,
-      vscode.debug.onDidStartDebugSession((s) => {
-        if (s.type !== 'probe-rs-debug') {
-          return;
-        }
-        this.probeRsSessions.add(s.id);
-        if (this.stateValue.kind === 'ready' || this.stateValue.kind === 'starting') {
-          void vscode.window.showWarningMessage(
-            'A probe-rs debug session started while tuning-studio holds the probe. Stop one of them.',
-          );
-        }
-      }),
-      vscode.debug.onDidTerminateDebugSession((s) => this.probeRsSessions.delete(s.id)),
-      vscode.tasks.onDidStartTaskProcess((e) => {
-        this.taskPids.set(e.execution, e.processId);
-        if (this.owned && sameExecution(this.owned, e.execution)) this.processId = e.processId;
-      }),
-      vscode.tasks.onDidEndTaskProcess((e) => this.onTaskEnded(e.execution, e.exitCode)),
-      // A task made only of dependsOn has no process; its end has no exit code.
-      vscode.tasks.onDidEndTask((e) => this.onTaskEnded(e.execution, undefined)),
-    );
-  }
+  constructor(private readonly cli: Cli) {}
 
-  get state(): SessionState {
-    return this.stateValue;
-  }
-
-  get isReady(): boolean {
-    return this.stateValue.kind === 'ready';
-  }
-
-  get ownsSession(): boolean {
-    return this.owned !== undefined;
-  }
+  get state(): SessionState { return this.stateValue; }
+  get isReady(): boolean { return this.stateValue.kind === 'ready'; }
 
   private setState(state: SessionState): void {
+    if (this.disposed) return;
     this.stateValue = state;
-    void vscode.commands.executeCommand('setContext', 'tuningStudio.owned', this.owned !== undefined);
-    void vscode.commands.executeCommand(
-      'setContext',
-      'tuningStudio.busy',
-      state.kind === 'building' || state.kind === 'starting',
-    );
     this.emitter.fire(state);
     this.scheduleCheck();
   }
 
-  /** Check for a session now and keep checking while a view is visible or Run is starting. */
+  /** Check for a session now and keep checking while a tuning view is visible. */
   setMonitoring(wanted: boolean): void {
     this.monitorWanted = wanted;
     this.scheduleCheck();
@@ -108,13 +45,10 @@ export class SessionController implements vscode.Disposable {
       this.checkTimer = undefined;
     }
     const kind = this.stateValue.kind;
-    if (kind === 'building') {
+    if (!this.monitorWanted) {
       return;
     }
-    if (!this.monitorWanted && kind !== 'starting' && kind !== 'unknown') {
-      return;
-    }
-    const delay = kind === 'starting' ? STARTING_CHECK_MS : kind === 'unknown' ? 0 : IDLE_CHECK_MS;
+    const delay = kind === 'unknown' ? 0 : IDLE_CHECK_MS;
     this.checkTimer = setTimeout(() => void this.check(), delay);
   }
 
@@ -126,21 +60,11 @@ export class SessionController implements vscode.Disposable {
 
   private async checkOnce(): Promise<SessionState> {
     const result = await this.cli.run(statusArgs(probe()), { timeoutMs: 5000 });
-    const kind = this.stateValue.kind;
-    if (kind === 'building') {
-      return this.stateValue;
-    }
     if (result.ok) {
       const status = result.stdout.split(/\r?\n/)[0]?.trim() || 'running';
-      if (kind === 'starting') {
-        this.log.appendLine('Session is ready.');
-      }
-      this.setState({ kind: 'ready', owned: this.ownedRole === 'run', status });
+      this.setState({ kind: 'ready', status });
     } else if (result.failure.kind === 'no-session') {
-      // A session Run started is not up until `status` reaches it.
-      this.setState(kind === 'starting' ? this.stateValue : { kind: 'none' });
-    } else if (kind === 'starting' && result.failure.kind === 'timeout') {
-      this.setState(this.stateValue);
+      this.setState({ kind: 'none' });
     } else {
       this.setState({ kind: 'error', failure: result.failure });
     }
@@ -160,245 +84,9 @@ export class SessionController implements vscode.Disposable {
     }
   }
 
-  /** Build if needed, start `tuning-studio run` as a task, and wait for its session. */
-  async run(command: RunCommand, folder: vscode.WorkspaceFolder): Promise<void> {
-    if (this.stopping) await this.stopping;
-    if (this.owned) {
-      void vscode.window.showInformationMessage('Run is already in progress.');
-      return;
-    }
-    if (this.probeRsSessions.size > 0) {
-      void vscode.window.showErrorMessage(
-        'A probe-rs debug session holds the probe. Stop it before Run, since only one program can own the probe.',
-      );
-      return;
-    }
-    const runProbe = probe();
-    const before = await this.check();
-    if (before.kind === 'ready') {
-      void vscode.window.showInformationMessage(
-        'A tuning-studio session is already running for this probe; Tuning Studio uses it. Stop it in its terminal to run again.',
-      );
-      return;
-    }
-    if (before.kind === 'error' && before.failure.kind !== 'failed') {
-      void vscode.window.showErrorMessage(`Cannot run: ${before.failure.message}`);
-      return;
-    }
-    this.stopRequested = false;
-
-    if (command.kind === 'task' && command.buildTask) {
-      const build = await findTask(command.buildTask, folder);
-      if (!build) {
-        this.setState({
-          kind: 'error',
-          failure: { kind: 'failed', message: `No task labelled "${command.buildTask}"` },
-        });
-        return;
-      }
-      this.log.appendLine(`Running build task "${command.buildTask}".`);
-      this.setState({ kind: 'building', task: command.buildTask });
-      const exitCode = await this.runOwned(build, 'build');
-      if (this.stopRequested) {
-        this.setState({ kind: 'none' });
-        return;
-      }
-      if (exitCode !== 0) {
-        this.setState({
-          kind: 'error',
-          failure: { kind: 'failed', message: exitCode === undefined
-            ? `Build task "${command.buildTask}" did not report success; use a process or shell build task`
-            : `Build task "${command.buildTask}" exited with ${exitCode}` },
-        });
-        return;
-      }
-    }
-
-    const owner = { token: randomUUID(), probe: runProbe };
-    this.owner = owner;
-    const task = runTask(command, folder, owner.token);
-    this.log.appendLine(
-      command.kind === 'cargo'
-        ? `Starting cargo ${command.args.join(' ')} with ${Object.entries(command.env)
-            .map(([k, v]) => `${k}="${v}"`)
-            .join(' ')}`
-        : `Starting ${command.executable} ${command.args.join(' ')}`,
-    );
-    this.setState({
-      kind: 'starting',
-      detail: command.kind === 'cargo' ? 'cargo run' : 'tuning-studio run',
-    });
-    void this.runOwned(task, 'run').then((exitCode) => {
-      const wasReady = this.stateValue.kind === 'ready';
-      if (this.stopRequested || exitCode === 0 || exitCode === undefined) {
-        this.log.appendLine(`Run ended${exitCode === undefined ? '' : ` with ${exitCode}`}.`);
-        this.setState({ kind: 'none' });
-      } else {
-        this.setState({
-          kind: 'error',
-          failure: {
-            kind: 'failed',
-            message: `${wasReady ? 'The session' : 'Run'} exited with ${exitCode}; see its terminal`,
-          },
-        });
-      }
-    }).catch((error: unknown) => {
-      this.setState({ kind: 'error', failure: {
-        kind: 'failed', message: `Could not start Run: ${error instanceof Error ? error.message : String(error)}`,
-      } });
-    });
-  }
-
-  /** Stop the build or session Run started. Sessions started elsewhere are left alone. */
-  stop(): Promise<void> {
-    this.stopping ??= this.stopOwned().finally(() => { this.stopping = undefined; });
-    return this.stopping;
-  }
-
-  private async stopOwned(): Promise<void> {
-    const execution = this.owned;
-    if (!execution) {
-      void vscode.window.showInformationMessage(
-        'Tuning Studio did not start this session. Stop it in the terminal that runs it.',
-      );
-      return;
-    }
-    this.stopRequested = true;
-    this.emitter.fire(this.stateValue);
-    this.log.appendLine('Stopping the session Run started.');
-    if (this.ownedRole === 'build' || !this.owner) {
-      execution.terminate();
-      if (!await this.waitForEnd(execution, 3000)) throw new Error('Build did not exit. Close its terminal before running again.');
-      return;
-    }
-    const owner = this.owner;
-    const result = await this.cli.run(
-      ['stop', ...(owner.probe.trim() ? ['--probe', owner.probe.trim()] : []), '--owner', owner.token],
-      { timeoutMs: 5000 },
-    );
-    if (this.owned !== execution) return;
-    if (result.ok) {
-      // Let the session clear breakpoints, resume the core, and exit itself.
-      this.log.appendLine('Detach requested; waiting for Run to exit.');
-      if (!await this.waitForEnd(execution, 1500)) {
-        // Match the owned task's PID, so an unrelated terminal cannot receive Ctrl+C.
-        const pid = this.processId;
-        const terminals = await Promise.all(vscode.window.terminals.map(async terminal => ({ terminal, pid: await terminal.processId })));
-        const terminal = pid === undefined ? undefined : terminals.find(t => t.pid === pid)?.terminal;
-        if (terminal) terminal.sendText('\u0003', false);
-        else if (pid !== undefined) {
-          try { process.kill(pid, 'SIGINT'); } catch { /* It may have just exited. */ }
-        }
-        if (!await this.waitForEnd(execution, 1500)) {
-          execution.terminate();
-          if (!await this.waitForEnd(execution, 3000)) {
-            throw new Error('Run did not exit after termination. Close its terminal before running again.');
-          }
-        }
-      }
-    } else if (result.failure.kind === 'no-session') {
-      // Cargo may still be compiling, or detach may have finished before this request.
-      execution.terminate();
-      if (!await this.waitForEnd(execution, 3000)) throw new Error('Run did not exit. Close its terminal before running again.');
-    } else {
-      this.stopRequested = false;
-      this.emitter.fire(this.stateValue);
-      this.log.appendLine(`Could not stop: ${result.failure.message}`);
-      void vscode.window.showErrorMessage(`Could not stop: ${result.failure.message}. Stop Run in its terminal.`);
-    }
-  }
-
-  private async waitForEnd(execution: vscode.TaskExecution, timeoutMs: number): Promise<boolean> {
-    if (this.owned !== execution) return true;
-    const ended = this.ended;
-    if (!ended) return false;
-    let timer: NodeJS.Timeout | undefined;
-    const done = await Promise.race([
-      ended.then(() => true),
-      new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), timeoutMs); }),
-    ]);
-    if (timer) clearTimeout(timer);
-    return done;
-  }
-
-  private pendingEnd?: { execution: vscode.TaskExecution; resolve: (code: number | undefined) => void };
-
-  private async runOwned(task: vscode.Task, role: 'build' | 'run'): Promise<number | undefined> {
-    const execution = await vscode.tasks.executeTask(task);
-    this.owned = execution;
-    this.processId = this.taskPids.get(execution);
-    this.ownedRole = role;
-    void vscode.commands.executeCommand('setContext', 'tuningStudio.owned', true);
-    this.ended = new Promise<number | undefined>((resolve) => {
-      this.pendingEnd = { execution, resolve };
-    });
-    const code = await this.ended;
-    this.processId = undefined;
-    this.ended = undefined;
-    this.owned = undefined;
-    this.ownedRole = undefined;
-    this.owner = undefined;
-    return code;
-  }
-
-  private onTaskEnded(execution: vscode.TaskExecution, exitCode: number | undefined): void {
-    const pending = this.pendingEnd;
-    if (pending && sameExecution(pending.execution, execution)) {
-      this.pendingEnd = undefined;
-      pending.resolve(exitCode);
-    }
-  }
-
   dispose(): void {
-    if (this.checkTimer) {
-      clearTimeout(this.checkTimer);
-    }
-    this.disposables.forEach((d) => d.dispose());
+    this.disposed = true;
+    if (this.checkTimer) clearTimeout(this.checkTimer);
+    this.emitter.dispose();
   }
-}
-
-function sameExecution(a: vscode.TaskExecution, b: vscode.TaskExecution): boolean {
-  if (a === b) {
-    return true;
-  }
-  const x = a.task;
-  const y = b.task;
-  return x.name === y.name && x.source === y.source && x.definition.type === y.definition.type;
-}
-
-/** Find a task by the label tasks.json gives it, or by `source: name`. */
-async function findTask(label: string, folder: vscode.WorkspaceFolder): Promise<vscode.Task | undefined> {
-  const tasks = await vscode.tasks.fetchTasks();
-  const inFolder = (t: vscode.Task) =>
-    t.scope === folder || t.scope === vscode.TaskScope.Workspace || t.scope === undefined ||
-    (typeof t.scope === 'object' && t.scope.uri.toString() === folder.uri.toString());
-  return (
-    tasks.find((t) => t.name === label && inFolder(t)) ??
-    tasks.find((t) => `${t.source}: ${t.name}` === label && inFolder(t)) ??
-    tasks.find((t) => t.name === label)
-  );
-}
-
-function runTask(command: RunCommand, folder: vscode.WorkspaceFolder, owner: string): vscode.Task {
-  const cwd = folder.uri.fsPath;
-  const execution =
-    command.kind === 'cargo'
-      ? new vscode.ProcessExecution('cargo', command.args, { cwd, env: { ...command.env, TUNING_STUDIO_OWNER_TOKEN: owner } })
-      : new vscode.ProcessExecution(command.executable, command.args, { cwd, env: { TUNING_STUDIO_OWNER_TOKEN: owner } });
-  const task = new vscode.Task(
-    { type: TASK_TYPE, action: 'run' },
-    folder,
-    'run',
-    'tuning-studio',
-    execution,
-    command.kind === 'cargo' ? ['$rustc'] : [],
-  );
-  task.presentationOptions = {
-    reveal: vscode.TaskRevealKind.Always,
-    panel: vscode.TaskPanelKind.Dedicated,
-    clear: true,
-    focus: false,
-  };
-  task.isBackground = false;
-  return task;
 }

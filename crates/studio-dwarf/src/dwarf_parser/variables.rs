@@ -159,13 +159,14 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
             return; // Skip variables without type info
         }
 
+        let mangled_name = if info.linkage_name != info.name {
+            info.linkage_name
+        } else {
+            None
+        };
         self.pending_symbols.push(PendingSymbol {
             name: info.name.unwrap_or_else(|| name.clone()),
-            mangled_name: if info.linkage_name.as_ref() != Some(&name) {
-                info.linkage_name
-            } else {
-                None
-            },
+            mangled_name,
             size: info.size,
             type_key: info.type_key,
             is_global: info.is_global,

@@ -23,6 +23,8 @@ struct Sample {
     #[serde(skip_serializing_if = "Option::is_none")]
     persistence_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    persistence_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     number: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
@@ -156,6 +158,7 @@ fn sample_location(
         display: String::new(),
         write_reason: None,
         persistence_key: None,
+        persistence_id: None,
         number: None,
         error: None,
         label: None,
@@ -219,6 +222,8 @@ impl Sample {
                         self.writable = kind != Kind::Watch;
                         if kind == Kind::Param {
                             self.persistence_key = api::persistence_key(elf, memory, node);
+                            self.persistence_id = api::persistence_id(elf, memory, node)
+                                .map(|id| format!("{id:016x}"));
                         }
                         if kind == Kind::Watch {
                             self.write_reason = Some(WATCH_REASON.into());
@@ -375,6 +380,7 @@ impl Sample {
                 display: String::new(),
                 write_reason: None,
                 persistence_key: None,
+                persistence_id: None,
                 number: None,
                 error: None,
                 label: Some(child.label.clone()),

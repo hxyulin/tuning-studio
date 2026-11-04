@@ -14,7 +14,7 @@ import { TasksTree } from './tasksView';
 import { single, WatchNode, WatchTree } from './watchView';
 import { WatchPanel } from './watchPanel';
 import { insertMutableWatch, suggestMutableWatch } from './sourceSuggestion';
-import { currentPlan, inheritedCargoDirectories, primaryFolder, readPlanInputs } from './workspaceInputs';
+import { currentInputs, primaryFolder, readInputs } from './workspaceInputs';
 
 const PLOT_WINDOW_KEY = 'tuningStudio.plotWindow';
 
@@ -28,7 +28,7 @@ export function activate(context: vscode.ExtensionContext): void {
       : undefined;
 
   const cli = new Cli(log, () => primaryFolder()?.uri.fsPath);
-  const session = new SessionController(cli, log);
+  const session = new SessionController(cli);
   const watch = new LiveWatch(cli, session, context.workspaceState);
   const plot = new PlotModel(context.workspaceState);
   plot.windowSeconds = context.workspaceState.get<number>(PLOT_WINDOW_KEY) ?? settings.plotWindow();
@@ -55,7 +55,7 @@ export function activate(context: vscode.ExtensionContext): void {
         if (!result.ok) log.appendLine(`Watch suggestions (${settings.executable()}): ${result.failure.message}`);
         return result;
       }, query,
-      { live: session.isReady, probe: settings.probe(), elf: sessionTree.plan?.elf?.value },
+      { live: session.isReady, probe: settings.probe(), elf: sessionTree.inputs?.elf },
     );
   });
   const tasksView = vscode.window.createTreeView('tuningStudio.tasks', {
@@ -65,8 +65,6 @@ export function activate(context: vscode.ExtensionContext): void {
   statusItem.name = 'Tuning Studio';
 
   for (const [key, value] of [
-    ['tuningStudio.owned', false],
-    ['tuningStudio.busy', false],
     ['tuningStudio.pollingPaused', false],
     ['tuningStudio.plotPaused', false],
     ['tuningStudio.tasksSampled', false],
@@ -121,25 +119,15 @@ export function activate(context: vscode.ExtensionContext): void {
     switch (state.kind) {
       case 'unknown':
       case 'none':
-        statusItem.text = '$(play) Tuning Studio';
-        statusItem.tooltip = 'Run firmware with tuning-studio';
-        statusItem.command = 'tuningStudio.run';
-        break;
-      case 'building':
-        statusItem.text = '$(loading~spin) Building';
-        statusItem.tooltip = `Running task "${state.task}"`;
-        statusItem.command = 'tuningStudio.session.focus';
-        break;
-      case 'starting':
-        statusItem.text = '$(loading~spin) Starting session';
-        statusItem.tooltip = 'Waiting for the tuning-studio session to answer';
+        statusItem.text = '$(plug) Tuning Studio';
+        statusItem.tooltip = 'No tuning session. Start tuning-studio run or attach in a terminal.';
         statusItem.command = 'tuningStudio.session.focus';
         break;
       case 'ready':
         statusItem.text = state.status.startsWith('halted')
           ? '$(debug-pause) Halted'
           : '$(pulse) Running';
-        statusItem.tooltip = `tuning-studio: ${state.status}${state.owned ? '' : ' (external session)'}`;
+        statusItem.tooltip = `tuning-studio: ${state.status}`;
         statusItem.command = 'tuningStudio.session.focus';
         break;
       case 'error':
@@ -152,14 +140,14 @@ export function activate(context: vscode.ExtensionContext): void {
     statusItem.show();
   };
 
-  let planGeneration = 0;
-  const refreshPlan = async () => {
-    const generation = ++planGeneration;
-    const plan = await currentPlan();
-    if (generation !== planGeneration) {
+  let inputsGeneration = 0;
+  const refreshInputs = async () => {
+    const generation = ++inputsGeneration;
+    const inputs = await currentInputs();
+    if (generation !== inputsGeneration) {
       return;
     }
-    sessionTree.plan = plan;
+    sessionTree.inputs = inputs;
     sessionTree.folder = primaryFolder()?.uri.fsPath;
     sessionTree.refresh();
   };
@@ -192,44 +180,8 @@ export function activate(context: vscode.ExtensionContext): void {
   const command = (id: string, handler: (...args: never[]) => unknown) =>
     context.subscriptions.push(vscode.commands.registerCommand(id, handler));
 
-  command('tuningStudio.run', async () => {
-    if (unsupported) {
-      void vscode.window.showErrorMessage(unsupported);
-      return;
-    }
-    const folder = primaryFolder();
-    const plan = await currentPlan();
-    await refreshPlan();
-    if (!folder || !plan) {
-      void vscode.window.showErrorMessage('Open the firmware folder to run it.');
-      return;
-    }
-    if (!plan.command) {
-      const choice = await vscode.window.showErrorMessage(
-        plan.problems[0] ?? 'Run is not configured',
-        'Open Settings',
-      );
-      if (choice) {
-        void vscode.commands.executeCommand('workbench.action.openWorkspaceSettings', 'tuningStudio');
-      }
-      return;
-    }
-    try {
-      await session.run(plan.command, folder);
-    } catch (error) {
-      void vscode.window.showErrorMessage(`Run failed: ${error instanceof Error ? error.message : String(error)}`);
-      await session.check();
-    }
-  });
-
-  command('tuningStudio.stop', async () => {
-    try { await session.stop(); } catch (error) {
-      void vscode.window.showErrorMessage(`Could not stop: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  });
-
   command('tuningStudio.refreshSession', async () => {
-    await refreshPlan();
+    await refreshInputs();
     await session.check();
   });
 
@@ -286,7 +238,7 @@ export function activate(context: vscode.ExtensionContext): void {
     if (!folder) {
       return;
     }
-    const inputs = await readPlanInputs(folder);
+    const inputs = await readInputs(folder);
     if (inputs.launches.length === 0) {
       void vscode.window.showInformationMessage(
         inputs.launchError
@@ -295,7 +247,7 @@ export function activate(context: vscode.ExtensionContext): void {
       );
       return;
     }
-    const current = inputs.settings.launchConfiguration;
+    const current = settings.launchConfiguration();
     const picked = await vscode.window.showQuickPick(
       [
         { label: 'First launch configuration', name: '', description: current === '' ? 'current' : undefined },
@@ -307,7 +259,7 @@ export function activate(context: vscode.ExtensionContext): void {
             .join(' · '),
         })),
       ],
-      { title: 'Launch configuration to take chip, ELF and build task from' },
+      { title: 'Launch configuration for offline ELF suggestions' },
     );
     if (picked) {
       await settings.update('launchConfiguration', picked.name);
@@ -462,19 +414,14 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const folder = primaryFolder();
   const watchers = folder
-    ? ['.vscode/launch.json', 'Cargo.toml'].map((p) =>
+    ? ['.vscode/launch.json'].map((p) =>
         vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(folder, p)),
       )
     : [];
-  if (folder) for (const dir of inheritedCargoDirectories(folder)) {
-    watchers.push(vscode.workspace.createFileSystemWatcher(
-      new vscode.RelativePattern(vscode.Uri.file(dir), '{config,config.toml}'),
-    ));
-  }
   for (const watcher of watchers) {
-    watcher.onDidChange(() => void refreshPlan());
-    watcher.onDidCreate(() => void refreshPlan());
-    watcher.onDidDelete(() => void refreshPlan());
+    watcher.onDidChange(() => void refreshInputs());
+    watcher.onDidCreate(() => void refreshInputs());
+    watcher.onDidDelete(() => void refreshInputs());
   }
 
   context.subscriptions.push(
@@ -513,15 +460,15 @@ export function activate(context: vscode.ExtensionContext): void {
       if (settings.affects(event, 'probe') || settings.affects(event, 'executable')) {
         void session.check();
       }
-      void refreshPlan();
+      void refreshInputs();
     }),
-    vscode.workspace.onDidChangeWorkspaceFolders(() => void refreshPlan()),
+    vscode.workspace.onDidChangeWorkspaceFolders(() => void refreshInputs()),
   );
 
   watch.setPlotted(plot.paths);
   updateStatusItem(session.state);
   updateWatchView();
-  void refreshPlan();
+  void refreshInputs();
   updateMonitoring();
   if (unsupported) {
     sessionTree.refresh();

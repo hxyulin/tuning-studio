@@ -1,7 +1,7 @@
 mod action;
 mod api;
 mod complete;
-mod daemon;
+use tuning_studio_cli::daemon;
 mod debug;
 mod flash;
 mod gdb;

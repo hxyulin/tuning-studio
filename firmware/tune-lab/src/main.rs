@@ -15,7 +15,7 @@ use tuning_studio_api::{Watchable, params, watch, watch_mut};
 params! {
     /// Target speed
     static SETPOINT: f32 = 100.0, range = -300.0..=300.0, unit = "rad/s";
-    static KP: f32 = 0.02, range = 0.0..=1.0, persist = "motor.kp";
+    static KP: f32 = 0.02, range = 0.0..=1.0, persist = true;
     static KI: f32 = 0.5, range = 0.0..=10.0;
     /// Whether the controller drives the motor; off, the output is 0
     static ENABLE: bool = true;

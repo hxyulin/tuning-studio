@@ -164,6 +164,41 @@ pub fn persistence_key(
     (!key.is_empty()).then_some(key)
 }
 
+/// Generated ID for opt-in tuning snapshots, shared with firmware.
+pub fn persistence_id(elf: &ElfInfo, memory: &mut dyn Memory, node: &SymbolNode) -> Option<u64> {
+    let enabled = field(elf, memory, node, "persist").ok()?;
+    if scalar(&enabled).ok()? != VariableType::Bool || memory.word(enabled.address, 1).ok()? != 1 {
+        return None;
+    }
+    let schema = field(elf, memory, node, "schema").ok()?;
+    let seed = memory.word(schema.address, 8).ok()?;
+    let default = field(elf, memory, node, "default").ok()?;
+    let scalar = scalar(&default).ok()?;
+    let tag = match scalar {
+        VariableType::I8 => 1,
+        VariableType::I16 => 2,
+        VariableType::I32 => 3,
+        VariableType::U8 => 4,
+        VariableType::U16 => 5,
+        VariableType::U32 => 6,
+        VariableType::F32 => 7,
+        VariableType::Bool => 8,
+        _ => return None,
+    };
+    let size = value::size_of(scalar);
+    let bits = |memory: &mut dyn Memory, name| {
+        let field = field(elf, memory, node, name).ok()?;
+        memory.word(field.address, size).ok().map(|v| v as u32)
+    };
+    Some(tuning_studio_api::parameter_id(
+        seed,
+        tag,
+        bits(memory, "default")?,
+        bits(memory, "min")?,
+        bits(memory, "max")?,
+    ))
+}
+
 /// The bytes [`render_watch`] reads: only the counters and what lies between
 /// them, so the window a write can overlap stays as short as it can be.
 pub fn watch_span(
@@ -283,6 +318,9 @@ pub fn render_param(elf: &ElfInfo, memory: &mut dyn Memory, node: &SymbolNode) -
     }
     if memory.word(param.request_id.address, 4)? != memory.word(param.reply_id.address, 4)? {
         notes.push("a request is waiting for the firmware".into());
+    }
+    if let Some(id) = persistence_id(elf, memory, node) {
+        notes.push(format!("flash {id:016x}"));
     }
     if let Some(key) = persistence_key(elf, memory, node) {
         notes.push(format!("flash key {key}"));
@@ -513,28 +551,45 @@ mod tests {
     }
 
     #[test]
-    fn current_params_expose_flash_keys_without_a_ramp_target() {
+    fn contiguous_split_static_resolves_to_ram_instead_of_the_vector_table() {
+        let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/params_v2.elf");
+        let elf = ElfParser::parse(fixture).unwrap();
+        let mut memory = Fake::from_elf(fixture);
+        let motor = node(&elf, &mut memory, "MOTOR");
+        assert!(
+            (0x2000_0000..0x2002_0000).contains(&motor.address),
+            "split static address: {:#x}",
+            motor.address
+        );
+        let json: serde_json::Value = serde_json::from_str(
+            &crate::inspect::inspect(Some(&elf), &mut memory, &["MOTOR.pi.integral".into()])
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(json["values"][0]["writable"], true);
+        assert_eq!(json["values"][0]["number"], 0.0);
+    }
+
+    #[test]
+    fn current_params_expose_generated_flash_ids_without_a_ramp_target() {
         let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/params_v2.elf");
         let elf = ElfParser::parse(fixture).unwrap();
         let mut memory = Fake::from_elf(fixture);
         let kp = node(&elf, &mut memory, "tune_lab::KP");
         assert!(field(&elf, &mut memory, &kp, "target").is_err());
         assert!(field(&elf, &mut memory, &kp, "max_step").is_err());
-        assert_eq!(
-            persistence_key(&elf, &mut memory, &kp).as_deref(),
-            Some("motor.kp")
-        );
+        let id = persistence_id(&elf, &mut memory, &kp).unwrap();
         assert_eq!(
             render_param(&elf, &mut memory, &kp).unwrap(),
-            "tune_lab::KP: f32 = 0.02 (default 0.02, 0.0 to 1.0, flash key motor.kp)\n"
+            format!("tune_lab::KP: f32 = 0.02 (default 0.02, 0.0 to 1.0, flash {id:016x})\n")
         );
         let json: serde_json::Value = serde_json::from_str(
             &crate::inspect::inspect(Some(&elf), &mut memory, &["tune_lab::KP".into()]).unwrap(),
         )
         .unwrap();
-        assert_eq!(json["values"][0]["persistence_key"], "motor.kp");
+        assert_eq!(json["values"][0]["persistence_id"], format!("{id:016x}"));
         let enable = node(&elf, &mut memory, "tune_lab::ENABLE");
-        assert_eq!(persistence_key(&elf, &mut memory, &enable), None);
+        assert_eq!(persistence_id(&elf, &mut memory, &enable), None);
     }
 
     #[test]
