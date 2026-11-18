@@ -1,7 +1,7 @@
 <h1 align="center">Tuning Studio</h1>
 <p align="center">Read, watch and tune running embedded firmware over SWD.</p>
 <p align="center">
-  <a href="rust-toolchain.toml"><img alt="Rust 1.99.1" src="https://img.shields.io/badge/Rust-1.99.1-dea584?logo=rust"></a>
+  <a href="rust-toolchain.toml"><img alt="Rust 1.100.0" src="https://img.shields.io/badge/Rust-1.100.0-dea584?logo=rust"></a>
   <a href="Cargo.toml"><img alt="Rust edition 2024" src="https://img.shields.io/badge/edition-2024-dea584"></a>
   <a href="#license"><img alt="MIT or Apache-2.0" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue"></a>
 </p>
